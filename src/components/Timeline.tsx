@@ -20,6 +20,7 @@ import {
   ClipboardList,
 } from 'lucide-react';
 
+// helper methods -
 const eventIcon: Record<TimelineEventType, LucideIcon> = {
   diagnosis: ClipboardList,
   medication: Pill,
@@ -89,16 +90,19 @@ const seriesColor: Record<MetricSeries['id'], string> = {
   stressIndex: neon.pink,
 };
 
-function useContainerWidth<T extends HTMLElement>() {
-  const ref = useRef<T | null>(null);
-  const [w, setW] = useState(0);
+function useContainerSize<T extends HTMLElement>() {
+  const ref = React.useRef<T | null>(null);
+  const [size, setSize] = React.useState({ w: 0, h: 0 });
   React.useLayoutEffect(() => {
     if (!ref.current) return;
-    const obs = new ResizeObserver(([entry]) => setW(entry.contentRect.width));
+    const obs = new ResizeObserver(([entry]) => {
+      const { width, height } = entry.contentRect;
+      setSize({ w: Math.round(width), h: Math.round(height) });
+    });
     obs.observe(ref.current);
     return () => obs.disconnect();
   }, []);
-  return { ref, width: w };
+  return { ref, width: size.w, height: size.h };
 }
 
 // utils
@@ -117,6 +121,36 @@ const pillClasses = (active: boolean) =>
       ? 'bg-blue-600 text-white border-blue-300 shadow-sm'
       : 'bg-[#0b1426] text-slate-300 border-[#1c2a46] hover:text-slate-100 hover:border-slate-500'
   );
+
+const allTrue = <T extends string>(rec: Record<T, boolean>) => Object.values(rec).every(Boolean);
+const anyTrue = <T extends string>(rec: Record<T, boolean>) => Object.values(rec).some(Boolean);
+
+// Build a new record with every key set to `val`
+function setAllRecord<T extends string>(keys: T[], val: boolean): Record<T, boolean> {
+  return keys.reduce(
+    (acc, k) => {
+      acc[k] = val;
+      return acc;
+    },
+    {} as Record<T, boolean>
+  );
+}
+
+const pillAllTeal = (active: boolean) =>
+  `px-2.5 py-1 rounded-full text-xs border transition
+   ${
+     active
+       ? 'bg-teal-600/30 border-teal-400 text-teal-300'
+       : 'bg-[#0b1426] border-[#1c2a46] text-slate-300 hover:text-slate-100'
+   }`;
+
+const pillAllBlue = (active: boolean) =>
+  `px-2.5 py-1 rounded-full text-xs border transition
+   ${
+     active
+       ? 'bg-blue-600/30 border-blue-400 text-blue-300'
+       : 'bg-[#0b1426] border-[#1c2a46] text-slate-300 hover:text-slate-100'
+   }`;
 
 export const Timeline: React.FC = () => {
   // filter state
@@ -140,6 +174,12 @@ export const Timeline: React.FC = () => {
     // exercise per day
     // pounds of vegetables - some diet
   });
+
+  const typeKeys = Object.keys(rowsByType) as TimelineEventType[];
+  const metricKeys = metricSeries.map((s) => s.id);
+
+  const allTypesOn = allTrue(enabledTypes);
+  const allMetricsOn = allTrue(enabledSeries);
 
   const events = useMemo(() => mockPatientEvents.filter((e) => enabledTypes[e.type]), [enabledTypes]);
 
@@ -166,16 +206,25 @@ export const Timeline: React.FC = () => {
   }, [range, minDate, maxDate]);
 
   // layout
-  const metricsHeight = 140;
+  // const metricsHeight = 140;
   const rows = Math.max(...Object.values(rowsByType)) + 1;
   const rowHeight = 36;
   const axisHeight = 40;
   const paddingLeft = 70;
   const paddingRight = 40;
   const topPad = 8;
-  const contentHeight = rows * rowHeight + metricsHeight + axisHeight + topPad;
+  // const contentHeight = rows * rowHeight + metricsHeight + axisHeight + topPad;
   const contentWidth = 2200;
   // const contentWidth = months * baseWidthPerMonth + paddingLeft + paddingRight;
+
+  const [hover, setHover] = useState<{ x: number; y: number; content: React.ReactNode } | null>(null);
+  const { ref: viewportRef, width: viewportW, height: viewportH } = useContainerSize<HTMLDivElement>();
+  const chartH = viewportH || rows * rowHeight + 140 + axisHeight + topPad;
+
+  const metricsHeight = Math.max(
+    140, // minimum metrics area
+    Math.round(chartH * 0.45)
+  );
 
   // x-scale
   const xScale = useMemo(
@@ -301,11 +350,6 @@ export const Timeline: React.FC = () => {
     );
   }, [viewDomain]);
 
-  // tooltip
-  // const containerRef = useRef<HTMLDivElement | null>(null);
-  const [hover, setHover] = useState<{ x: number; y: number; content: React.ReactNode } | null>(null);
-  const { ref: viewportRef, width: viewportW } = useContainerWidth<HTMLDivElement>();
-
   const initialScale = useMemo(() => {
     if (!viewportW) {
       return 1;
@@ -340,28 +384,49 @@ export const Timeline: React.FC = () => {
 
         {/* Toggles */}
         <div className="flex flex-col gap-2">
+          {/* Show events */}
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs text-slate-400 mr-1">Show events:</span>
-            {Object.keys(rowsByType).map((t) => {
-              const active = enabledTypes[t as TimelineEventType];
+
+            {/* ALL (events) */}
+            <button
+              className={pillAllTeal(allTypesOn)}
+              onClick={() => setEnabledTypes(setAllRecord(typeKeys, !allTypesOn))}
+              title={allTypesOn ? 'Hide all events' : 'Show all events'}
+            >
+              All
+            </button>
+
+            {/* Individual event pills */}
+            {typeKeys.map((t) => {
+              const active = enabledTypes[t];
               return (
                 <button
                   key={t}
-                  onClick={() => setEnabledTypes((prev) => ({ ...prev, [t]: !prev[t as TimelineEventType] }))}
+                  onClick={() => setEnabledTypes((prev) => ({ ...prev, [t]: !prev[t] }))}
                   className={pillClasses(active)}
                 >
-                  <span
-                    className="inline-block w-2 h-2 rounded-full mr-2"
-                    style={{ background: typeColors[t as TimelineEventType] }}
-                  />
+                  <span className="inline-block w-2 h-2 rounded-full mr-2" style={{ background: typeColors[t] }} />
                   <span className="capitalize">{t}</span>
                 </button>
               );
             })}
           </div>
 
+          {/* Show metrics */}
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs text-slate-400 mr-1">Show metrics:</span>
+
+            {/* ALL (metrics) */}
+            <button
+              className={pillAllBlue(allMetricsOn)}
+              onClick={() => setEnabledSeries(setAllRecord(metricKeys as any, !allMetricsOn))}
+              title={allMetricsOn ? 'Hide all metrics' : 'Show all metrics'}
+            >
+              All
+            </button>
+
+            {/* Individual metric pills */}
             {metricSeries.map((s) => {
               const active = enabledSeries[s.id];
               return (
@@ -382,8 +447,7 @@ export const Timeline: React.FC = () => {
       {/* Timeline viewport */}
       <div
         ref={viewportRef}
-        className={clsx('relative border rounded-xl shadow-lg overflow-hidden', bgPanel)}
-        style={{ height: contentHeight + 18 }}
+        className={clsx('relative border rounded-xl shadow-lg overflow-hidden', bgPanel, 'h-[75vh]')}
       >
         {/* neon HUD border glow */}
         <div
@@ -425,7 +489,7 @@ export const Timeline: React.FC = () => {
               </div>
 
               <TransformComponent wrapperClass="!w-full !h-full" contentClass="!w-fit !h-fit">
-                <svg width={contentWidth} height={contentHeight}>
+                <svg width={contentWidth} height={chartH}>
                   {/* alternating stripes */}
                   {Array.from({ length: rows }).map((_, i) => (
                     <rect
@@ -441,7 +505,7 @@ export const Timeline: React.FC = () => {
                   {/* faint vertical grid */}
                   {Array.from({ length: 24 }).map((_, i) => {
                     const x = paddingLeft + i * ((contentWidth - paddingRight - paddingLeft) / 24);
-                    return <line key={i} x1={x} x2={x} y1={0} y2={contentHeight} stroke={gridStroke} strokeWidth={1} />;
+                    return <line key={i} x1={x} x2={x} y1={0} y2={chartH} stroke={gridStroke} strokeWidth={1} />;
                   })}
 
                   {/* Metric tracks background */}
@@ -535,9 +599,13 @@ export const Timeline: React.FC = () => {
                     const nodeColor =
                       e.type === 'life' ? (e.meta?.valence === 'negative' ? '#ff6b6b' : '#8cff66') : baseColor;
 
+                    const NODE_R = 20;
+
                     // guide line
-                    const guideY1 = cy + 22; // just below the big node
-                    const guideY2 = topPad + rows * rowHeight - 6;
+                    // y-position of the bottom time axis baseline (before the +padding used in the Axis group)
+                    const axisBaselineY = topPad + rows * rowHeight + metricsHeight;
+                    const guideY1 = cy + NODE_R + 2; // just below the big node
+                    const guideY2 = axisBaselineY - 2;
 
                     return (
                       <g
@@ -639,17 +707,29 @@ export const Timeline: React.FC = () => {
                   )}
 
                   {/* Axis */}
-                  <g transform={`translate(0, ${topPad + rows * rowHeight + metricsHeight + 6})`}>
+                  <g transform={`translate(0, ${topPad + rows * rowHeight + metricsHeight + 10})`}>
                     <AxisBottom
                       scale={xScale}
                       stroke={axisStroke}
                       tickStroke={axisStroke}
-                      tickLabelProps={() => ({
-                        fontSize: 11,
-                        fill: axisLabel,
-                        textAnchor: 'middle',
-                        dy: '0.6em',
-                      })}
+                      // You can keep tickLabelProps if you want, but tickComponent will win
+                      tickComponent={({ x, y, formattedValue }) => {
+                        const isYear = !isNaN(Number(formattedValue)); // e.g. "2022" → true, "Jan" → false
+
+                        return (
+                          <g transform={`translate(${x}, ${y})`}>
+                            <text
+                              fontSize={isYear ? 28 : 18}
+                              fontWeight={isYear ? 700 : 500}
+                              fill={isYear ? '#ffb020' : axisLabel} // year standout color
+                              textAnchor="middle"
+                              dy={isYear ? '2em' : '1em'} // offset years lower
+                            >
+                              {formattedValue}
+                            </text>
+                          </g>
+                        );
+                      }}
                     />
                   </g>
                 </svg>
@@ -660,7 +740,7 @@ export const Timeline: React.FC = () => {
                     className="absolute z-30 pointer-events-none bg-[#0f172a] text-slate-100 border border-slate-700 rounded-md shadow px-3 py-2 text-xs"
                     style={{
                       left: clamp(hover.x + tooltipOffset, 8, contentWidth - 300),
-                      top: clamp(hover.y + tooltipOffset, 8, contentHeight - 100),
+                      top: clamp(hover.y + tooltipOffset, 8, chartH - 100),
                       maxWidth: 280,
                     }}
                   >
