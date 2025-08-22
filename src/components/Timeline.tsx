@@ -1,18 +1,22 @@
 import React, { useMemo, useRef, useState } from 'react';
 import { TransformComponent, TransformWrapper } from 'react-zoom-pan-pinch';
-import { AxisBottom } from '@visx/axis';
+import { AxisBottom, AxisLeft } from '@visx/axis';
 import { scaleTime, scaleLinear } from '@visx/scale';
 import { LinePath } from '@visx/shape';
 import { localPoint } from '@visx/event';
 import clsx from 'clsx';
 import { format } from 'date-fns';
-import {
-  mockPatientEvents,
-  metricSeries,
-  TimelineEvent,
-  TimelineEventType,
-  MetricSeries,
-} from '../data/mockPatientData';
+import { mockPatientEvents, metricSeries, TimelineEventType, MetricSeries } from '../data/mockPatientData';
+
+type UnitGroup = 'lb' | 'mmHg' | 'index100' | 'other';
+
+const unitGroup: Record<MetricSeries['id'], UnitGroup> = {
+  weight: 'lb',
+  systolic: 'mmHg',
+  diastolic: 'mmHg',
+  sleepScore: 'index100', // treat both as 0–100 index
+  stressIndex: 'index100',
+};
 
 const bgPanel = 'bg-[#0c1220]';
 const bgStripeA = '#101a2c';
@@ -182,6 +186,94 @@ export const Timeline: React.FC = () => {
   }, [rows]);
 
   const filteredSeries = metricSeries.filter((metric) => enabledSeries[metric.id]); // TODO; enabledMetric
+  const activeMetricIds = filteredSeries.map((s) => s.id);
+  const activeGroups = new Set(activeMetricIds.map((id) => unitGroup[id]));
+
+  // SINGLE = exactly 1 metric
+  // GROUP  = 2+ metrics but all in same unit group
+  // NORMALIZED = 2+ metrics with mixed groups
+  type AutoMode = 'SINGLE' | 'GROUP' | 'NORMALIZED';
+
+  const autoScaleMode: AutoMode =
+    activeMetricIds.length === 1 ? 'SINGLE' : activeGroups.size === 1 ? 'GROUP' : 'NORMALIZED';
+
+  const activeGroup: UnitGroup | null =
+    autoScaleMode === 'SINGLE' || autoScaleMode === 'GROUP' ? ([...activeGroups][0] ?? null) : null;
+
+  const ySingle = useMemo(() => {
+    if (autoScaleMode !== 'SINGLE') return null;
+    const id = activeMetricIds[0];
+    const series = metricSeries.find((s) => s.id === id);
+    if (!series) return null;
+    const vals = series.points.map((p) => p.value);
+    const min = Math.min(...vals);
+    const max = Math.max(...vals);
+    const pad = (max - min) * 0.1 || 10;
+    return scaleLinear<number>({
+      domain: [min - pad, max + pad],
+      range: [topPad + rowHeight * rows + metricsHeight - 10, topPad + rowHeight * rows + 10],
+    });
+  }, [autoScaleMode, activeMetricIds, rows, metricsHeight]);
+
+  const yGroup = useMemo(() => {
+    if (autoScaleMode !== 'GROUP' || !activeGroup) return null;
+
+    // fixed domain for index100
+    if (activeGroup === 'index100') {
+      return scaleLinear<number>({
+        domain: [0, 100],
+        range: [topPad + rowHeight * rows + metricsHeight - 10, topPad + rowHeight * rows + 10],
+      });
+    }
+
+    // otherwise compute min/max across the active metrics (over visible domain for responsiveness)
+    const [vd0, vd1] = viewDomain;
+    const toNum = (d: Date) => d.getTime();
+    const vals: number[] = [];
+    for (const s of metricSeries) {
+      if (!activeMetricIds.includes(s.id)) continue;
+      if (unitGroup[s.id] !== activeGroup) continue;
+      for (const p of s.points) {
+        const t = new Date(p.t);
+        if (toNum(t) >= toNum(vd0) && toNum(t) <= toNum(vd1)) vals.push(p.value);
+      }
+    }
+    if (!vals.length) return null;
+    const min = Math.min(...vals);
+    const max = Math.max(...vals);
+    const pad = (max - min) * 0.1 || 10;
+
+    return scaleLinear<number>({
+      domain: [min - pad, max + pad],
+      range: [topPad + rowHeight * rows + metricsHeight - 10, topPad + rowHeight * rows + 10],
+    });
+  }, [autoScaleMode, activeGroup, activeMetricIds, rows, metricsHeight, viewDomain]);
+
+  // NORMALIZED overlay: shared 0–100
+  const yNormalized = useMemo(() => {
+    const top = topPad + rowHeight * rows + 10;
+    const bottom = topPad + rowHeight * rows + metricsHeight - 10;
+    return scaleLinear<number>({ domain: [0, 100], range: [bottom, top] });
+  }, [rows, metricsHeight]);
+
+  // Per-series visible extents for normalization
+  const visibleExtents = useMemo(() => {
+    const [vd0, vd1] = viewDomain;
+    const toNum = (d: Date) => d.getTime();
+    return Object.fromEntries(
+      metricSeries.map((s) => {
+        const pts = s.points.filter((p) => {
+          const t = new Date(p.t).getTime();
+          return t >= toNum(vd0) && t <= toNum(vd1);
+        });
+        if (!pts.length) return [s.id, { min: 0, max: 1 }];
+        const vals = pts.map((p) => p.value);
+        const min = Math.min(...vals);
+        const max = Math.max(...vals);
+        return [s.id, { min, max: max === min ? min + 1 : max }];
+      })
+    );
+  }, [viewDomain]);
 
   // tooltip
   // const containerRef = useRef<HTMLDivElement | null>(null);
@@ -337,48 +429,70 @@ export const Timeline: React.FC = () => {
                   />
 
                   {/* Metric lines (top/bottom panels) */}
-                  {filteredSeries.map((s, idx) => {
-                    const isTop = idx % 2 === 0;
-                    const yScale = (isTop ? yScales.top : yScales.bottom)(s.id);
+                  {filteredSeries.map((s) => {
+                    // choose y scale
+                    const yFor = (val: number) => {
+                      if (autoScaleMode === 'SINGLE' && ySingle) return ySingle(val);
+                      if (autoScaleMode === 'GROUP' && yGroup) return yGroup(val);
+                      const { min, max } = visibleExtents[s.id];
+                      const norm = ((val - min) / (max - min)) * 100;
+                      return yNormalized(norm);
+                    };
+
                     return (
                       <g key={s.id}>
                         <LinePath
                           data={s.points}
                           x={(d) => xScale(new Date(d.t))}
-                          y={(d) => yScale(d.value)}
+                          y={(d) => yFor(d.value)}
                           stroke={seriesColor[s.id]}
                           strokeWidth={2}
                           strokeOpacity={0.9}
-                          curve={undefined}
                         />
-                        {/* hover points */}
-                        {s.points.map((p, i) => (
-                          <circle
-                            key={i}
-                            cx={xScale(new Date(p.t))}
-                            cy={yScale(p.value)}
-                            r={3}
-                            fill={seriesColor[s.id]}
-                            onMouseEnter={(evt) => {
-                              const lp = localPoint(evt) as { x: number; y: number };
-                              setHover({
-                                x: lp.x + 10,
-                                y: lp.y + 10,
-                                content: (
-                                  <div>
-                                    <div className="font-semibold">{s.label}</div>
-                                    <div className="opacity-80">{format(new Date(p.t), 'PP p')}</div>
-                                    <div>
-                                      {p.value}
-                                      {s.unit ? ` ${s.unit}` : ''}
-                                    </div>
-                                  </div>
-                                ),
-                              });
-                            }}
-                            onMouseLeave={() => setHover(null)}
-                          />
-                        ))}
+
+                        {s.points.map((p, i) => {
+                          const cx = xScale(new Date(p.t));
+                          const cy = yFor(p.value);
+                          return (
+                            <g key={i}>
+                              {/* big hit area */}
+                              <circle
+                                cx={cx}
+                                cy={cy}
+                                r={14}
+                                fill="transparent"
+                                stroke="transparent"
+                                style={{ pointerEvents: 'all' }}
+                                onMouseEnter={(evt) => {
+                                  const lp = localPoint(evt) as { x: number; y: number };
+                                  let extra: string | null = null;
+                                  if (autoScaleMode === 'NORMALIZED') {
+                                    const { min, max } = visibleExtents[s.id];
+                                    const norm = ((p.value - min) / (max - min)) * 100;
+                                    extra = ` • ${norm.toFixed(0)}%`;
+                                  }
+                                  setHover({
+                                    x: lp.x,
+                                    y: lp.y,
+                                    content: (
+                                      <div>
+                                        <div className="font-semibold">{s.label}</div>
+                                        <div className="opacity-80">{format(new Date(p.t), 'PP p')}</div>
+                                        <div>
+                                          {p.value}
+                                          {s.unit ? ` ${s.unit}` : ''}
+                                          {extra}
+                                        </div>
+                                      </div>
+                                    ),
+                                  });
+                                }}
+                                onMouseLeave={() => setHover(null)}
+                              />
+                              <circle cx={cx} cy={cy} r={3} fill={seriesColor[s.id]} />
+                            </g>
+                          );
+                        })}
                       </g>
                     );
                   })}
@@ -426,6 +540,45 @@ export const Timeline: React.FC = () => {
                       </g>
                     );
                   })}
+
+                  {/* Left Axis (SINGLE or GROUP) */}
+                  {(autoScaleMode === 'SINGLE' || autoScaleMode === 'GROUP') && (ySingle || yGroup) && (
+                    <g>
+                      <g transform={`translate(${paddingLeft - 40},0)`}>
+                        <AxisLeft
+                          scale={autoScaleMode === 'SINGLE' ? ySingle! : yGroup!}
+                          stroke={axisStroke}
+                          tickStroke={axisStroke}
+                          tickLabelProps={() => ({
+                            fontSize: 11,
+                            fill: axisLabel,
+                            textAnchor: 'end',
+                            dy: '0.3em',
+                          })}
+                        />
+                      </g>
+
+                      {/* Axis unit label */}
+                      {activeGroup && (
+                        <text
+                          x={paddingLeft - 56}
+                          y={topPad + rowHeight * rows + metricsHeight / 2}
+                          fill={axisLabel}
+                          fontSize={11}
+                          transform={`rotate(-90, ${paddingLeft - 56}, ${topPad + rowHeight * rows + metricsHeight / 2})`}
+                          textAnchor="middle"
+                        >
+                          {activeGroup === 'mmHg'
+                            ? 'mmHg'
+                            : activeGroup === 'lb'
+                              ? 'lb'
+                              : activeGroup === 'index100'
+                                ? 'Score (0–100)'
+                                : ''}
+                        </text>
+                      )}
+                    </g>
+                  )}
 
                   {/* Axis */}
                   <g transform={`translate(0, ${topPad + rows * rowHeight + metricsHeight + 6})`}>
