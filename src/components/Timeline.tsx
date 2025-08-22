@@ -7,6 +7,29 @@ import { localPoint } from '@visx/event';
 import clsx from 'clsx';
 import { format } from 'date-fns';
 import { mockPatientEvents, metricSeries, TimelineEventType, MetricSeries } from '../data/mockPatientData';
+import type { LucideIcon } from 'lucide-react';
+import {
+  Pill,
+  Heart,
+  Beaker,
+  Stethoscope,
+  Activity,
+  Image as ImageIcon,
+  Syringe,
+  Brain,
+  ClipboardList,
+} from 'lucide-react';
+
+const eventIcon: Record<TimelineEventType, LucideIcon> = {
+  diagnosis: ClipboardList,
+  medication: Pill,
+  lab: Beaker,
+  procedure: Syringe,
+  complaint: Brain,
+  imaging: ImageIcon,
+  vital: Activity,
+  life: Heart,
+};
 
 type UnitGroup = 'lb' | 'mmHg' | 'index100' | 'other';
 
@@ -17,6 +40,9 @@ const unitGroup: Record<MetricSeries['id'], UnitGroup> = {
   sleepScore: 'index100', // treat both as 0–100 index
   stressIndex: 'index100',
 };
+
+const nodeStroke = '#0b0f1c';
+const dashed = { strokeDasharray: '4 6' };
 
 const bgPanel = 'bg-[#0c1220]';
 const bgStripeA = '#101a2c';
@@ -502,7 +528,17 @@ export const Timeline: React.FC = () => {
                     const x = xScale(new Date(e.timestamp));
                     const row = rowsByType[e.type];
                     const cy = topPad + row * rowHeight + rowHeight / 2;
-                    const color = typeColors[e.type];
+                    const baseColor = typeColors[e.type];
+                    const Icon = eventIcon[e.type] ?? ClipboardList;
+
+                    // choose nodeColor (life events can override)
+                    const nodeColor =
+                      e.type === 'life' ? (e.meta?.valence === 'negative' ? '#ff6b6b' : '#8cff66') : baseColor;
+
+                    // guide line
+                    const guideY1 = cy + 22; // just below the big node
+                    const guideY2 = topPad + rows * rowHeight - 6;
+
                     return (
                       <g
                         key={e.id}
@@ -511,8 +547,8 @@ export const Timeline: React.FC = () => {
                         onMouseEnter={(evt) => {
                           const lp = localPoint(evt) as { x: number; y: number };
                           setHover({
-                            x: lp.x + 10,
-                            y: lp.y + 10,
+                            x: lp.x,
+                            y: lp.y,
                             content: (
                               <div>
                                 <div className="font-semibold">{e.label}</div>
@@ -527,16 +563,38 @@ export const Timeline: React.FC = () => {
                           });
                         }}
                         onMouseLeave={() => setHover(null)}
-                        onClick={() => {
-                          // TODO: open drawer/sheet; for now alert
-                          alert(`${e.label}\n${new Date(e.timestamp).toLocaleString()}`);
-                        }}
+                        onClick={() => alert(`${e.label}\n${new Date(e.timestamp).toLocaleString()}`)}
                       >
-                        {/* stem */}
-                        <line x1={0} x2={0} y1={-12} y2={12} stroke="#6b7fb1" strokeOpacity={0.6} />
-                        {/* neon node */}
-                        <circle r={7} fill={color} stroke="#0b0f1c" strokeWidth={2} />
-                        <circle r={11} fill="none" stroke={color} strokeOpacity={0.35} />
+                        {/* BIG HIT AREA for easy hover/click */}
+                        <circle r={30} fill="transparent" stroke="transparent" style={{ pointerEvents: 'all' }} />
+
+                        {/* dashed guide into metrics area */}
+                        <line
+                          x1={0}
+                          x2={0}
+                          y1={guideY1 - cy}
+                          y2={guideY2 - cy}
+                          stroke={nodeColor}
+                          strokeOpacity={0.45}
+                          strokeDasharray="4 6"
+                        />
+
+                        {/* outer glow */}
+                        <circle r={26} fill="none" stroke={nodeColor} strokeOpacity={0.25} />
+
+                        {/* main disk */}
+                        <circle r={20} fill={nodeColor} stroke="#0b0f1c" strokeWidth={2} />
+
+                        {/* inner contrast disk to help icons pop */}
+                        <circle r={16} fill="#0d1629" opacity={0.3} />
+
+                        {/* icon (centered) */}
+                        <g transform="translate(-12,-12)">
+                          <Icon size={24} color="#e6f4ff" strokeWidth={2} />
+                        </g>
+
+                        {/* hover halo */}
+                        <circle r={32} fill="none" stroke={nodeColor} strokeOpacity={0.18} />
                       </g>
                     );
                   })}
