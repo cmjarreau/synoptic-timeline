@@ -5,7 +5,8 @@ export type TimelineEventType =
   | 'procedure'
   | 'complaint'
   | 'imaging'
-  | 'vital';
+  | 'vital'
+  | 'life'; // positive/negative life events
 
 export interface TimelineEvent {
   id: string;
@@ -15,75 +16,144 @@ export interface TimelineEvent {
   meta?: Record<string, any>;
 }
 
+export interface MetricPoint {
+  t: string; // ISO
+  value: number; // numeric value
+}
+
+export interface MetricSeries {
+  id: 'weight' | 'systolic' | 'diastolic' | 'sleepScore' | 'stressIndex';
+  label: string;
+  unit?: string;
+  points: MetricPoint[];
+}
+
 export const mockPatientEvents: TimelineEvent[] = [
   {
-    id: 'event-001',
+    id: 'e1',
     type: 'diagnosis',
     label: 'Type 2 Diabetes',
-    timestamp: '2021-04-12T00:00:00Z',
-    meta: { status: 'active', icd10: 'E11.9' },
+    timestamp: '2022-01-12T00:00:00Z',
+    meta: { icd10: 'E11.9' },
   },
   {
-    id: 'event-002',
+    id: 'e2',
     type: 'medication',
-    label: 'Metformin 500mg Start',
-    timestamp: '2021-04-15T00:00:00Z',
-    meta: { dose: '500mg', frequency: 'BID', route: 'oral' },
+    label: 'Metformin 500mg start',
+    timestamp: '2022-01-20T00:00:00Z',
+    meta: { dose: '500mg BID' },
   },
+  { id: 'e3', type: 'lab', label: 'HbA1c 8.1%', timestamp: '2022-03-01T00:00:00Z', meta: { value: 8.1, units: '%' } },
+  { id: 'e4', type: 'procedure', label: 'Knee arthroscopy', timestamp: '2022-06-15T00:00:00Z', meta: { side: 'left' } },
   {
-    id: 'event-003',
-    type: 'lab',
-    label: 'HbA1c 8.2%',
-    timestamp: '2021-05-01T00:00:00Z',
-    meta: { test: 'HbA1c', value: 8.2, units: '%' },
+    id: 'e5',
+    type: 'life',
+    label: 'Marriage (positive)',
+    timestamp: '2022-09-10T00:00:00Z',
+    meta: { valence: 'positive' },
   },
+  { id: 'e6', type: 'complaint', label: 'Fatigue reported', timestamp: '2022-11-02T00:00:00Z' },
+  { id: 'e7', type: 'imaging', label: 'DEXA: mild osteopenia', timestamp: '2023-02-01T00:00:00Z' },
   {
-    id: 'event-004',
-    type: 'procedure',
-    label: 'Knee Surgery',
-    timestamp: '2022-01-10T00:00:00Z',
-    meta: { location: 'Left knee', surgeon: 'Dr. Smith' },
-  },
-  {
-    id: 'event-005',
-    type: 'vital',
-    label: 'Weight 190 lbs',
-    timestamp: '2022-03-01T00:00:00Z',
-    meta: { value: 190, units: 'lbs' },
-  },
-  {
-    id: 'event-006',
-    type: 'complaint',
-    label: 'Fatigue reported',
-    timestamp: '2022-06-10T00:00:00Z',
-    meta: { note: 'Persistent fatigue over past 2 weeks' },
-  },
-  {
-    id: 'event-007',
-    type: 'lab',
-    label: 'HbA1c 6.5%',
-    timestamp: '2022-11-01T00:00:00Z',
-    meta: { test: 'HbA1c', value: 6.5, units: '%' },
-  },
-  {
-    id: 'event-008',
-    type: 'imaging',
-    label: 'DEXA Scan',
-    timestamp: '2023-03-15T00:00:00Z',
-    meta: { result: 'Mild osteopenia' },
-  },
-  {
-    id: 'event-009',
-    type: 'vital',
-    label: 'Blood Pressure 130/85',
-    timestamp: '2023-06-01T00:00:00Z',
-    meta: { systolic: 130, diastolic: 85 },
-  },
-  {
-    id: 'event-010',
+    id: 'e8',
     type: 'medication',
-    label: 'Metformin dosage increased to 1000mg',
-    timestamp: '2023-08-01T00:00:00Z',
-    meta: { dose: '1000mg', frequency: 'BID', route: 'oral' },
+    label: 'Metformin ↑ to 1000mg',
+    timestamp: '2023-05-05T00:00:00Z',
+    meta: { dose: '1000mg BID' },
+  },
+  {
+    id: 'e9',
+    type: 'life',
+    label: 'Parent passing (stressful)',
+    timestamp: '2023-07-22T00:00:00Z',
+    meta: { valence: 'negative' },
+  },
+  { id: 'e10', type: 'lab', label: 'HbA1c 6.6%', timestamp: '2023-10-01T00:00:00Z', meta: { value: 6.6, units: '%' } },
+  {
+    id: 'e11',
+    type: 'vital',
+    label: 'Weight 188 lb',
+    timestamp: '2024-01-01T00:00:00Z',
+    meta: { value: 188, units: 'lb' },
+  },
+  { id: 'e12', type: 'complaint', label: 'Sleep disturbance', timestamp: '2024-04-01T00:00:00Z' },
+  {
+    id: 'e13',
+    type: 'life',
+    label: 'New job (positive)',
+    timestamp: '2024-08-15T00:00:00Z',
+    meta: { valence: 'positive' },
+  },
+  { id: 'e14', type: 'lab', label: 'HbA1c 6.2%', timestamp: '2025-03-01T00:00:00Z', meta: { value: 6.2, units: '%' } },
+];
+
+export const metricSeries: MetricSeries[] = [
+  {
+    id: 'weight',
+    label: 'Weight',
+    unit: 'lb',
+    points: [
+      { t: '2022-01-01T00:00:00Z', value: 196 },
+      { t: '2022-06-01T00:00:00Z', value: 193 },
+      { t: '2023-01-01T00:00:00Z', value: 191 },
+      { t: '2023-06-01T00:00:00Z', value: 189 },
+      { t: '2024-01-01T00:00:00Z', value: 188 },
+      { t: '2024-08-01T00:00:00Z', value: 186 },
+      { t: '2025-03-01T00:00:00Z', value: 184 },
+    ],
+  },
+  {
+    id: 'systolic',
+    label: 'BP Systolic',
+    unit: 'mmHg',
+    points: [
+      { t: '2022-01-01Z', value: 132 },
+      { t: '2022-06-01Z', value: 128 },
+      { t: '2023-01-01Z', value: 125 },
+      { t: '2023-06-01Z', value: 129 },
+      { t: '2024-01-01Z', value: 124 },
+      { t: '2024-08-01Z', value: 121 },
+      { t: '2025-03-01Z', value: 122 },
+    ],
+  },
+  {
+    id: 'diastolic',
+    label: 'BP Diastolic',
+    unit: 'mmHg',
+    points: [
+      { t: '2022-01-01Z', value: 86 },
+      { t: '2022-06-01Z', value: 82 },
+      { t: '2023-01-01Z', value: 80 },
+      { t: '2023-06-01Z', value: 83 },
+      { t: '2024-01-01Z', value: 79 },
+      { t: '2024-08-01Z', value: 78 },
+      { t: '2025-03-01Z', value: 77 },
+    ],
+  },
+  {
+    id: 'sleepScore',
+    label: 'Sleep Score',
+    unit: '',
+    points: [
+      { t: '2022-01-01Z', value: 65 },
+      { t: '2022-09-01Z', value: 74 },
+      { t: '2023-07-01Z', value: 60 }, // dip around negative life event
+      { t: '2024-01-01Z', value: 67 },
+      { t: '2024-08-01Z', value: 72 },
+      { t: '2025-03-01Z', value: 76 },
+    ],
+  },
+  {
+    id: 'stressIndex',
+    label: 'Stress Index',
+    unit: '',
+    points: [
+      { t: '2022-01-01Z', value: 40 },
+      { t: '2022-09-15Z', value: 35 }, // positive event dip
+      { t: '2023-07-22Z', value: 75 }, // negative spike
+      { t: '2024-01-01Z', value: 55 },
+      { t: '2024-08-15Z', value: 45 }, // positive event dip
+      { t: '2025-03-01Z', value: 42 },
+    ],
   },
 ];
