@@ -6,7 +6,13 @@ import { LinePath } from '@visx/shape';
 import { localPoint } from '@visx/event';
 import clsx from 'clsx';
 import { format } from 'date-fns';
-import { mockPatientEvents, metricSeries, TimelineEventType, MetricSeries } from '../data/mockPatientData';
+import {
+  mockPatientEvents,
+  metricSeries,
+  TimelineEventType,
+  MetricSeries,
+  patientProfile,
+} from '../data/mockPatientData';
 import { curveMonotoneX, curveCatmullRom, curveBasis } from '@visx/curve';
 import type { LucideIcon } from 'lucide-react';
 import {
@@ -225,7 +231,7 @@ export const Timeline: React.FC = () => {
   const axisHeight = 40;
   const paddingLeft = 70;
   const paddingRight = 40;
-  const topPad = 8;
+  const topPad = 70;
   // const contentHeight = rows * rowHeight + metricsHeight + axisHeight + topPad;
   const contentWidth = 2200;
   // const contentWidth = months * baseWidthPerMonth + paddingLeft + paddingRight;
@@ -239,9 +245,10 @@ export const Timeline: React.FC = () => {
     Math.round(chartH * 0.45)
   );
 
+  const chartInset = 30;
   // x-scale
   const xScale = useMemo(
-    () => scaleTime<number>({ domain: viewDomain, range: [paddingLeft, contentWidth - paddingRight] }),
+    () => scaleTime<number>({ domain: viewDomain, range: [paddingLeft + chartInset, contentWidth - paddingRight] }),
     [viewDomain]
   );
 
@@ -468,6 +475,23 @@ export const Timeline: React.FC = () => {
         ref={viewportRef}
         className={clsx('relative border rounded-xl shadow-lg overflow-hidden', bgPanel, 'h-[75vh]')}
       >
+        <div className="absolute top-2 left-2 z-30 bg-[#0f172a]/60 border border-slate-700 rounded-lg px-4 py-3 shadow-lg backdrop-blur-sm">
+          <h2 className="text-lg font-semibold text-slate-100">{patientProfile.name}</h2>
+          <div className="text-sm text-slate-300 space-y-0.5">
+            <div>
+              <span className="font-medium">Age:</span> {patientProfile.age}
+            </div>
+            <div>
+              <span className="font-medium">Sex:</span> {patientProfile.sex}
+            </div>
+            <div>
+              <span className="font-medium">DOB:</span> {patientProfile.dob}
+            </div>
+            <div>
+              <span className="font-medium">MRN:</span> {patientProfile.mrn}
+            </div>
+          </div>
+        </div>
         {/* neon HUD border glow */}
         <div
           className="pointer-events-none absolute inset-0"
@@ -513,7 +537,7 @@ export const Timeline: React.FC = () => {
                   {Array.from({ length: rows }).map((_, i) => (
                     <rect
                       key={i}
-                      x={0}
+                      x={paddingLeft}
                       y={topPad + i * rowHeight}
                       width={contentWidth}
                       height={rowHeight}
@@ -529,9 +553,9 @@ export const Timeline: React.FC = () => {
 
                   {/* Metric tracks background */}
                   <rect
-                    x={0}
+                    x={paddingLeft}
                     y={topPad + rows * rowHeight}
-                    width={contentWidth}
+                    width={contentWidth - paddingLeft - paddingRight}
                     height={metricsHeight}
                     fill="#0a1221"
                     opacity={0.6}
@@ -651,7 +675,7 @@ export const Timeline: React.FC = () => {
                           });
                         }}
                         onMouseLeave={() => setHover(null)}
-                        onClick={() => alert(`${e.label}\n${new Date(e.timestamp).toLocaleString()}`)}
+                        onClick={() => {}}
                       >
                         {/* BIG HIT AREA for easy hover/click */}
                         <circle r={30} fill="transparent" stroke="transparent" style={{ pointerEvents: 'all' }} />
@@ -690,7 +714,7 @@ export const Timeline: React.FC = () => {
                   {/* Left Axis (SINGLE or GROUP) */}
                   {(autoScaleMode === 'SINGLE' || autoScaleMode === 'GROUP') && (ySingle || yGroup) && (
                     <g>
-                      <g transform={`translate(${paddingLeft - 40},0)`}>
+                      <g transform={`translate(${paddingLeft},0)`}>
                         <AxisLeft
                           scale={autoScaleMode === 'SINGLE' ? ySingle! : yGroup!}
                           stroke={axisStroke}
@@ -702,7 +726,7 @@ export const Timeline: React.FC = () => {
                                 fontWeight={600}
                                 fill={axisLabel}
                                 textAnchor="end"
-                                dx="{-6}"
+                                dx="{-20}"
                                 dy="0.35em"
                               >
                                 {formattedValue}
@@ -715,11 +739,11 @@ export const Timeline: React.FC = () => {
                       {/* Axis unit label */}
                       {activeGroup && (
                         <text
-                          x={paddingLeft + 220}
+                          x={paddingLeft + 200}
                           y={topPad + rowHeight * rows + metricsHeight / 2}
                           fill={axisLabel}
                           fontSize={18}
-                          transform={`rotate(-90, ${paddingLeft - 56}, ${topPad + rowHeight * rows + metricsHeight / 2})`}
+                          transform={`rotate(-90, ${paddingLeft - 25}, ${topPad + rowHeight * rows + metricsHeight / 2})`}
                           textAnchor="middle"
                         >
                           {activeGroup === 'mmHg'

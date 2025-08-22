@@ -157,3 +157,11 @@ export const metricSeries: MetricSeries[] = [
     ],
   },
 ];
+
+export const patientProfile = {
+  name: 'Jane Doe',
+  age: 52,
+  sex: 'F',
+  dob: '1973-05-10',
+  mrn: '123456',
+};
