@@ -7,6 +7,7 @@ import { localPoint } from '@visx/event';
 import clsx from 'clsx';
 import { format } from 'date-fns';
 import { mockPatientEvents, metricSeries, TimelineEventType, MetricSeries } from '../data/mockPatientData';
+import { curveMonotoneX, curveCatmullRom, curveBasis } from '@visx/curve';
 import type { LucideIcon } from 'lucide-react';
 import {
   Pill,
@@ -32,10 +33,11 @@ const eventIcon: Record<TimelineEventType, LucideIcon> = {
   life: Heart,
 };
 
-type UnitGroup = 'lb' | 'mmHg' | 'index100' | 'other';
+type UnitGroup = 'lbs' | 'mmHg' | 'index100' | 'other';
+type SmoothMode = 'straight' | 'monotone' | 'catmull' | 'basis';
 
 const unitGroup: Record<MetricSeries['id'], UnitGroup> = {
-  weight: 'lb',
+  weight: 'lbs',
   systolic: 'mmHg',
   diastolic: 'mmHg',
   sleepScore: 'index100', // treat both as 0–100 index
@@ -174,6 +176,17 @@ export const Timeline: React.FC = () => {
     // exercise per day
     // pounds of vegetables - some diet
   });
+
+  const [smooth, setSmooth] = useState<SmoothMode>('monotone');
+
+  const curveFactory =
+    smooth === 'monotone'
+      ? curveMonotoneX
+      : smooth === 'catmull'
+        ? curveCatmullRom.alpha(0.5) // 0.0–1.0 tension
+        : smooth === 'basis'
+          ? curveBasis
+          : undefined; // straight segments
 
   const typeKeys = Object.keys(rowsByType) as TimelineEventType[];
   const metricKeys = metricSeries.map((s) => s.id);
@@ -379,6 +392,12 @@ export const Timeline: React.FC = () => {
                 {r}
               </button>
             ))}
+            <div className="ml-3 h-5 w-px bg-[#1c2a46]" />
+            {(['straight', 'monotone', 'catmull', 'basis'] as const).map((m) => (
+              <button key={m} onClick={() => setSmooth(m)} className={chipClasses(smooth === m)}>
+                {m === 'straight' ? 'Sharp' : m === 'monotone' ? 'Smooth' : m === 'catmull' ? 'Catmull' : 'Basis'}
+              </button>
+            ))}
           </div>
         </div>
 
@@ -536,8 +555,9 @@ export const Timeline: React.FC = () => {
                           x={(d) => xScale(new Date(d.t))}
                           y={(d) => yFor(d.value)}
                           stroke={seriesColor[s.id]}
-                          strokeWidth={2}
+                          strokeWidth={5}
                           strokeOpacity={0.9}
+                          curve={curveFactory}
                         />
 
                         {s.points.map((p, i) => {
@@ -675,29 +695,37 @@ export const Timeline: React.FC = () => {
                           scale={autoScaleMode === 'SINGLE' ? ySingle! : yGroup!}
                           stroke={axisStroke}
                           tickStroke={axisStroke}
-                          tickLabelProps={() => ({
-                            fontSize: 11,
-                            fill: axisLabel,
-                            textAnchor: 'end',
-                            dy: '0.3em',
-                          })}
+                          tickComponent={({ x, y, formattedValue }) => (
+                            <g transform={`translate(${x}, ${y})`}>
+                              <text
+                                fontSize={20}
+                                fontWeight={600}
+                                fill={axisLabel}
+                                textAnchor="end"
+                                dx="{-6}"
+                                dy="0.35em"
+                              >
+                                {formattedValue}
+                              </text>
+                            </g>
+                          )}
                         />
                       </g>
 
                       {/* Axis unit label */}
                       {activeGroup && (
                         <text
-                          x={paddingLeft - 56}
+                          x={paddingLeft + 220}
                           y={topPad + rowHeight * rows + metricsHeight / 2}
                           fill={axisLabel}
-                          fontSize={11}
+                          fontSize={18}
                           transform={`rotate(-90, ${paddingLeft - 56}, ${topPad + rowHeight * rows + metricsHeight / 2})`}
                           textAnchor="middle"
                         >
                           {activeGroup === 'mmHg'
                             ? 'mmHg'
-                            : activeGroup === 'lb'
-                              ? 'lb'
+                            : activeGroup === 'lbs'
+                              ? 'lbs'
                               : activeGroup === 'index100'
                                 ? 'Score (0–100)'
                                 : ''}

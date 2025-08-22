@@ -74,7 +74,7 @@ export const mockPatientEvents: TimelineEvent[] = [
     type: 'vital',
     label: 'Weight 188 lb',
     timestamp: '2024-01-01T00:00:00Z',
-    meta: { value: 188, units: 'lb' },
+    meta: { value: 188, units: 'lbs' },
   },
   { id: 'e12', type: 'complaint', label: 'Sleep disturbance', timestamp: '2024-04-01T00:00:00Z' },
   {
@@ -91,7 +91,7 @@ export const metricSeries: MetricSeries[] = [
   {
     id: 'weight',
     label: 'Weight',
-    unit: 'lb',
+    unit: 'lbs',
     points: [
       { t: '2022-01-01T00:00:00Z', value: 196 },
       { t: '2022-06-01T00:00:00Z', value: 193 },
