@@ -28,7 +28,6 @@ import {
 } from 'lucide-react';
 import { Drag } from '@visx/drag';
 import { ReactZoomPanPinchRef } from 'react-zoom-pan-pinch';
-import { flushSync } from 'react-dom';
 
 // helper methods -
 type Projection = {
@@ -58,9 +57,6 @@ const unitGroup: Record<MetricSeries['id'], UnitGroup> = {
   sleepScore: 'index100', // treat both as 0–100 index
   stressIndex: 'index100',
 };
-
-const nodeStroke = '#0b0f1c';
-const dashed = { strokeDasharray: '4 6' };
 
 const bgPanel = 'bg-[#0c1220]';
 const bgStripeA = '#101a2c';
@@ -105,6 +101,11 @@ const seriesColor: Record<MetricSeries['id'], string> = {
   diastolic: neon.purple,
   sleepScore: neon.teal,
   stressIndex: neon.pink,
+};
+
+const MIN_BY_GROUP: Partial<Record<UnitGroup, number>> = {
+  lbs: 0,
+  index100: 0,
 };
 
 function useContainerSize<T extends HTMLElement>() {
@@ -168,22 +169,6 @@ const pillAllBlue = (active: boolean) =>
        ? 'bg-blue-600/30 border-blue-400 text-blue-300'
        : 'bg-[#0b1426] border-[#1c2a46] text-slate-300 hover:text-slate-100'
    }`;
-
-const stop =
-  <E extends React.SyntheticEvent<any>>(fn?: (e: E) => void) =>
-  (e: E) => {
-    e.preventDefault();
-    e.stopPropagation();
-    fn?.(e);
-  };
-
-function defaultPositiveDelta(seriesId: MetricSeries['id']) {
-  const s = metricSeries.find((m) => m.id === seriesId);
-  if (!s) return 10;
-  const vals = s.points.map((p) => p.value);
-  const span = Math.max(10, Math.max(...vals) - Math.min(...vals));
-  return Math.round(span * 0.25); // ~25% of span
-}
 
 export const Timeline: React.FC = () => {
   // filter state
@@ -252,18 +237,14 @@ export const Timeline: React.FC = () => {
 
   const [projection, setProjection] = useState<Projection | null>(null);
 
-  // const metricsHeight = 140;
   const rows = Math.max(...Object.values(rowsByType)) + 1;
   const rowHeight = 36;
   const axisHeight = 40;
   const paddingLeft = 70;
   const basePaddingRight = 40;
-  // const projectionPad = projection ? 300 : 0;
   const rightPad = basePaddingRight;
 
   const baseContentWidth = 2200;
-  // const projectionRunwayPx = projection ? Math.max(600, Math.ceil(projection.dx) + 200) : 0;
-  // const totalWidth = baseContentWidth + projectionRunwayPx;
   const topPad = 70;
 
   const [runwayPx, setRunwayPx] = useState(800); // initial future area
@@ -313,8 +294,13 @@ export const Timeline: React.FC = () => {
     const min = Math.min(...vals);
     const max = Math.max(...vals);
     const pad = (max - min) * 0.1 || 10;
+
+    const g = unitGroup[id]; // e.g., 'lbs'
+    const hardMin = MIN_BY_GROUP[g] ?? null;
+    const lower = hardMin != null ? Math.min(min - pad, hardMin) : min - pad;
+
     return scaleLinear<number>({
-      domain: [min - pad, max + pad],
+      domain: [lower, max + pad],
       range: [topPad + rowHeight * rows + metricsHeight - 10, topPad + rowHeight * rows + 10],
     });
   }, [autoScaleMode, activeMetricIds, rows, metricsHeight]);
@@ -347,8 +333,11 @@ export const Timeline: React.FC = () => {
     const max = Math.max(...vals);
     const pad = (max - min) * 0.1 || 10;
 
+    const hardMin = MIN_BY_GROUP[activeGroup] ?? null; // 'lbs' -> 0
+    const lower = hardMin != null ? Math.min(min - pad, hardMin) : min - pad;
+
     return scaleLinear<number>({
-      domain: [min - pad, max + pad],
+      domain: [lower, max + pad],
       range: [topPad + rowHeight * rows + metricsHeight - 10, topPad + rowHeight * rows + 10],
     });
   }, [autoScaleMode, activeGroup, activeMetricIds, rows, metricsHeight, viewDomain]);
@@ -393,26 +382,7 @@ export const Timeline: React.FC = () => {
     return { t: new Date(last.t), v: last.value };
   };
 
-  // const toDate = (x: number) =>
-  //   xScale.invert
-  //     ? (xScale.invert(x) as Date)
-  //     : new Date(
-  //         viewDomain[0].getTime() +
-  //           (viewDomain[1].getTime() - viewDomain[0].getTime()) *
-  //             ((x - (xScale as any).range()[0]) / ((xScale as any).range()[1] - (xScale as any).range()[0]))
-  //       );
-
   const twRef = useRef<ReactZoomPanPinchRef | null>(null);
-
-  // const getZoomState = () => {
-  //   // support both shapes: {state} or {transformState}
-  //   const s: any = twRef.current?.state ?? (twRef.current as any)?.transformState;
-  //   return {
-  //     scale: Number(s?.scale) || 1,
-  //     positionX: Number(s?.positionX) || 0,
-  //     positionY: Number(s?.positionY) || 0,
-  //   };
-  // };
   const svgRef = useRef<SVGSVGElement | null>(null);
 
   // rAF throttle for buttery updates
@@ -442,6 +412,63 @@ export const Timeline: React.FC = () => {
     }
     return { clientX: evt?.clientX ?? 0, clientY: evt?.clientY ?? 0 };
   }
+
+  const projectionReadout = useMemo(() => {
+    if (!projection) return null;
+
+    const id: MetricSeries['id'] = projection.metricId; // "weight"
+    const anchor = lastPointOf(id);
+    if (!anchor) return null;
+
+    // anchor pixel coords
+    const x1 = xScale(anchor.t);
+
+    // helper: pixel->ms using the current visible domain and base range
+    const rangePx = baseRangeRight - (paddingLeft + chartInset);
+    const domainMs = viewDomain[1].getTime() - viewDomain[0].getTime();
+    const msPerPx = domainMs / Math.max(1, rangePx);
+
+    // project time: add dx * msPerPx to the anchor *time*
+    const futureTs = new Date(anchor.t.getTime() + projection.dx * msPerPx);
+
+    // we render y with: yEnd = y1 - projection.dy (positive dy = up)
+    // recover y1 (anchor y) with the same scale mode
+    const y1 = (() => {
+      if (autoScaleMode === 'SINGLE' && ySingle) return ySingle(anchor.v);
+      if (autoScaleMode === 'GROUP' && yGroup) return yGroup(anchor.v);
+      const { min, max } = visibleExtents[id];
+      const pct = ((anchor.v - min) / (max - min)) * 100;
+      return yNormalized(pct);
+    })();
+
+    const yEnd = y1 - projection.dy;
+
+    // invert yEnd -> value (lbs)
+    const toValueFromY = (yPx: number) => {
+      if (autoScaleMode === 'SINGLE' && ySingle) return ySingle.invert(yPx);
+      if (autoScaleMode === 'GROUP' && yGroup) return yGroup.invert(yPx);
+      const { min, max } = visibleExtents[id];
+      const pct = (yNormalized.range()[0] - yPx) / (yNormalized.range()[0] - yNormalized.range()[1]); // 0..1
+      return min + pct * (max - min);
+    };
+
+    const vFuture = toValueFromY(yEnd);
+    const delta = vFuture - anchor.v;
+    const daysAhead = Math.round((projection.dx * msPerPx) / 86_400_000);
+
+    return { t: futureTs, v: vFuture, delta, daysAhead };
+  }, [
+    projection,
+    xScale,
+    ySingle,
+    yGroup,
+    yNormalized,
+    visibleExtents,
+    viewDomain,
+    baseRangeRight,
+    paddingLeft,
+    chartInset,
+  ]);
 
   return (
     <div className="space-y-4">
@@ -610,6 +637,25 @@ export const Timeline: React.FC = () => {
                   Reset
                 </button>
               </div>
+
+              {projectionReadout && (
+                <div className="absolute left-3 bottom-3 z-30 bg-[#0f172a]/85 border border-slate-700 rounded-md px-3 py-2 text-xs text-slate-100 shadow">
+                  <div className="font-semibold mb-0.5">Projected weight</div>
+                  <div>
+                    {format(projectionReadout.t, 'PP')} (
+                    {projectionReadout.daysAhead >= 0 ? `+${projectionReadout.daysAhead}` : projectionReadout.daysAhead}{' '}
+                    d)
+                  </div>
+                  <div className="mt-0.5">
+                    <span className="font-semibold">{projectionReadout.v.toFixed(1)} lbs</span>{' '}
+                    <span className={projectionReadout.delta >= 0 ? 'text-rose-400' : 'text-emerald-400'}>
+                      ({projectionReadout.delta >= 0 ? '+' : ''}
+                      {projectionReadout.delta.toFixed(1)})
+                    </span>
+                    <span className="text-slate-400"> vs latest</span>
+                  </div>
+                </div>
+              )}
 
               <TransformComponent wrapperClass="!w-full !h-full" contentClass="!w-fit !h-fit">
                 <svg ref={svgRef} width={totalWidth} height={chartH} style={{ touchAction: 'none' }}>
