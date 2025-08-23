@@ -186,15 +186,6 @@ function defaultPositiveDelta(seriesId: MetricSeries['id']) {
 }
 
 export const Timeline: React.FC = () => {
-  const rafRef = useRef<number | null>(null);
-  const pendingRef = useRef<{ dx: number; dy: number } | null>(null);
-  React.useEffect(
-    () => () => {
-      if (rafRef.current) cancelAnimationFrame(rafRef.current);
-    },
-    []
-  );
-
   // filter state
   const [enabledTypes, setEnabledTypes] = useState<Record<TimelineEventType, boolean>>({
     diagnosis: true,
@@ -422,6 +413,35 @@ export const Timeline: React.FC = () => {
   //     positionY: Number(s?.positionY) || 0,
   //   };
   // };
+  const svgRef = useRef<SVGSVGElement | null>(null);
+
+  // rAF throttle for buttery updates
+  const rafRef = useRef<number | null>(null);
+  const pendingRef = useRef<{ dx: number; dy: number } | null>(null);
+  React.useEffect(
+    () => () => {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    },
+    []
+  );
+
+  // Convert screen pointer to *content* coordinates (pre-zoom/pan)
+  function toContentXY(clientX: number, clientY: number) {
+    const el = svgRef.current!;
+    const rect = el.getBoundingClientRect(); // reflects CSS transforms
+    const x = ((clientX - rect.left) / rect.width) * totalWidth;
+    const y = ((clientY - rect.top) / rect.height) * chartH;
+    return { x, y };
+  }
+
+  // Normalize mouse/touch to clientX/clientY
+  function getClientXY(evt: any) {
+    if (evt?.touches?.[0]) {
+      const t = evt.touches[0];
+      return { clientX: t.clientX, clientY: t.clientY };
+    }
+    return { clientX: evt?.clientX ?? 0, clientY: evt?.clientY ?? 0 };
+  }
 
   return (
     <div className="space-y-4">
@@ -592,7 +612,7 @@ export const Timeline: React.FC = () => {
               </div>
 
               <TransformComponent wrapperClass="!w-full !h-full" contentClass="!w-fit !h-fit">
-                <svg width={totalWidth} height={chartH} style={{ touchAction: 'none' }}>
+                <svg ref={svgRef} width={totalWidth} height={chartH} style={{ touchAction: 'none' }}>
                   {/* alternating stripes */}
                   {Array.from({ length: rows }).map((_, i) => (
                     <rect
@@ -839,47 +859,37 @@ export const Timeline: React.FC = () => {
                             height={chartH}
                             onDragStart={() => setPanDisabled(true)}
                             onDragEnd={() => setPanDisabled(false)}
-                            onDragMove={({ x, y }) => {
-                              if (x == null || y == null) return;
+                            onDragMove={({ event }) => {
+                              if (event == null) return;
 
-                              const s: any = twRef.current?.state ?? (twRef.current as any)?.transformState;
-                              const scale = Number(s?.scale) || 1;
-                              const posX = Number(s?.positionX) || 0;
-                              const posY = Number(s?.positionY) || 0;
+                              const { clientX, clientY } = getClientXY(event);
+                              const { x: cx, y: cy } = toContentXY(clientX, clientY);
 
-                              const localX = (x - posX) / scale;
-                              const localY = (y - posY) / scale;
+                              // 2) clamp to your metrics band
+                              const metricsTop = topPad + rows * rowHeight + 10;
+                              const metricsBottom = topPad + rows * rowHeight + metricsHeight - 10;
 
-                              // const visibleLeft = Math.max(0, -posX / scale);
-                              // const visibleTop = Math.max(0, -posY / scale);
-                              // const cx = visibleLeft + x / scale;
-                              // const cy = visibleTop + y / scale;
+                              const cxc = Math.max(paddingLeft + 6, Math.min(totalWidth - rightPad - 6, cx));
+                              const cyc = Math.max(metricsTop, Math.min(metricsBottom, cy));
 
-                              // clamp in content coords
-                              const cxc = Math.max(minX, Math.min(maxX, localX));
-                              const cyc = Math.max(metricsTop, Math.min(metricsBottom, localY));
+                              // 3) compute deltas in content space
                               const nextDx = cxc - x1; // right = +
-                              const nextDy = y1 - cyc; // up = +  (invert SVG Y)
+                              const nextDy = y1 - cyc; // up = + (SVG Y grows downward)
 
-                              console.log('Drag Event:', { x, y }); // ADDED
-                              console.log('Transformed Coordinates:', { localX, localY, cxc, cyc }); // ADDED
-                              console.log('Next Deltas:', { nextDx, nextDy }); // ADDED
-
-                              pendingRef.current = { dx: nextDx, dy: nextDy }; // Storing values in pendingRef
-
+                              // 4) rAF-throttle state updates for smooth animation
+                              pendingRef.current = { dx: nextDx, dy: nextDy };
                               if (rafRef.current == null) {
                                 rafRef.current = requestAnimationFrame(() => {
                                   const p = pendingRef.current;
-                                  if (p) {
-                                    setProjection((prev) => (prev ? { ...prev, ...p } : prev));
-                                    pendingRef.current = null; // Clear pendingRef after updating
-                                  }
+                                  if (p) setProjection((prev) => (prev ? { ...prev, ...p } : prev));
+                                  pendingRef.current = null;
                                   rafRef.current = null;
                                 });
                               }
 
+                              // 5) grow runway when approaching edge
                               if (cxc > baseRangeRight + runwayPx - 150) {
-                                setRunwayPx((r) => r + 400); // grow in chunks
+                                setRunwayPx((r) => r + 400);
                               }
                             }}
                           >
@@ -903,38 +913,38 @@ export const Timeline: React.FC = () => {
                                 <line
                                   x1={x1}
                                   y1={y1}
-                                  x2={projection.dx + x1}
+                                  x2={x1 + projection.dx}
                                   y2={y1 - projection.dy}
                                   stroke={seriesColor[id]}
                                   strokeWidth={16}
                                   strokeOpacity={0.001}
                                   pointerEvents="stroke"
-                                  onMouseDown={stop(dragStart)}
-                                  onMouseMove={stop(dragMove)}
-                                  onMouseUp={stop(dragEnd)}
-                                  onTouchStart={stop(dragStart)}
-                                  onTouchMove={stop(dragMove)}
-                                  onTouchEnd={stop(dragEnd)}
+                                  onMouseDown={dragStart}
+                                  onMouseMove={dragMove}
+                                  onMouseUp={dragEnd}
+                                  onTouchStart={dragStart}
+                                  onTouchMove={dragMove}
+                                  onTouchEnd={dragEnd}
                                 />
 
                                 {/* handle: large hit circle + visible knob */}
                                 <circle
-                                  cx={projection.dx + x1}
+                                  cx={x1 + projection.dx}
                                   cy={y1 - projection.dy}
                                   r={22}
                                   fill="#fff"
                                   fillOpacity={0.001}
                                   className="cursor-grab"
                                   pointerEvents="all"
-                                  onMouseDown={stop(dragStart)}
-                                  onMouseMove={stop(dragMove)}
-                                  onMouseUp={stop(dragEnd)}
-                                  onTouchStart={stop(dragStart)}
-                                  onTouchMove={stop(dragMove)}
-                                  onTouchEnd={stop(dragEnd)}
+                                  onMouseDown={dragStart}
+                                  onMouseMove={dragMove}
+                                  onMouseUp={dragEnd}
+                                  onTouchStart={dragStart}
+                                  onTouchMove={dragMove}
+                                  onTouchEnd={dragEnd}
                                 />
                                 <circle
-                                  cx={projection.dx + x1}
+                                  cx={x1 + projection.dx}
                                   cy={y1 - projection.dy}
                                   r={8}
                                   fill={seriesColor[id]}
