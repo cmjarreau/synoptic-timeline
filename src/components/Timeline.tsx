@@ -28,6 +28,7 @@ import {
 } from 'lucide-react';
 import { Drag } from '@visx/drag';
 import { ReactZoomPanPinchRef } from 'react-zoom-pan-pinch';
+import { flushSync } from 'react-dom';
 
 // helper methods -
 type Projection = {
@@ -185,6 +186,15 @@ function defaultPositiveDelta(seriesId: MetricSeries['id']) {
 }
 
 export const Timeline: React.FC = () => {
+  const rafRef = useRef<number | null>(null);
+  const pendingRef = useRef<{ dx: number; dy: number } | null>(null);
+  React.useEffect(
+    () => () => {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    },
+    []
+  );
+
   // filter state
   const [enabledTypes, setEnabledTypes] = useState<Record<TimelineEventType, boolean>>({
     diagnosis: true,
@@ -261,13 +271,15 @@ export const Timeline: React.FC = () => {
   const rightPad = basePaddingRight;
 
   const baseContentWidth = 2200;
-  const projectionRunwayPx = projection ? Math.max(600, Math.ceil(projection.dx) + 200) : 0;
-  const totalWidth = baseContentWidth + projectionRunwayPx;
-
+  // const projectionRunwayPx = projection ? Math.max(600, Math.ceil(projection.dx) + 200) : 0;
+  // const totalWidth = baseContentWidth + projectionRunwayPx;
   const topPad = 70;
-  // const contentHeight = rows * rowHeight + metricsHeight + axisHeight + topPad;
-  // const contentWidth = 2200;
-  // const contentWidth = months * baseWidthPerMonth + paddingLeft + paddingRight;
+
+  const [runwayPx, setRunwayPx] = useState(800); // initial future area
+  const totalWidth = baseContentWidth + (projection ? Math.max(600, runwayPx) : 0);
+
+  const chartInset = 30;
+  const baseRangeRight = baseContentWidth - rightPad;
 
   const [hover, setHover] = useState<{ x: number; y: number; content: React.ReactNode } | null>(null);
   const { ref: viewportRef, width: viewportW, height: viewportH } = useContainerSize<HTMLDivElement>();
@@ -278,51 +290,13 @@ export const Timeline: React.FC = () => {
     Math.round(chartH * 0.45)
   );
 
-  // Extend the visible domain 6 months into the future when projection is enabled
-  // const effectiveDomain: [Date, Date] = useMemo(() => {
-  //   const [d0, d1] = viewDomain;
-  //   if (!projection) return [d0, d1];
-  //   const extended = new Date(d1);
-  //   extended.setMonth(extended.getMonth() + 6); // +6 months runway
-  //   return [d0, extended];
-  // }, [viewDomain, projection]);
   const effectiveDomain: [Date, Date] = useMemo(() => viewDomain, [viewDomain, projection]);
 
-  const chartInset = 30;
-  const baseRangeRight = baseContentWidth - rightPad;
   // x-scale
   const xScale = useMemo(
     () => scaleTime<number>({ domain: effectiveDomain, range: [paddingLeft + chartInset, baseRangeRight] }),
     [effectiveDomain, baseRangeRight, paddingLeft]
   );
-
-  // y-scale
-  const yScales = useMemo(() => {
-    // these would be like 'dimensions' from the FDD - some sub-dimension i need to review the definition.
-    const domains: Record<MetricSeries['id'], [number, number]> = {} as any;
-    for (const metric of metricSeries) {
-      const vals = metric.points.map((p) => p.value);
-      const min = Math.min(...vals);
-      const max = Math.max(...vals);
-      const pad = (max - min) * 0.1 || 10;
-      domains[metric.id] = [min - pad, max + pad];
-    }
-    const trackHeight = metricsHeight / 2;
-
-    return {
-      top: (id: MetricSeries['id']) =>
-        scaleLinear<number>({
-          domain: domains[id],
-          range: [topPad + rowHeight * rows + trackHeight - 10, topPad + rowHeight * rows + 10],
-        }),
-      bottom: (id: MetricSeries['id']) =>
-        scaleLinear<number>({
-          domain: domains[id],
-          range: [topPad + rowHeight * rows + metricsHeight - 10, topPad + rowHeight * rows + trackHeight + 10],
-        }),
-      trackHeight,
-    };
-  }, [rows]);
 
   const filteredSeries = metricSeries.filter((metric) => enabledSeries[metric.id]); // TODO; enabledMetric
   const activeMetricIds = filteredSeries.map((s) => s.id);
@@ -414,12 +388,7 @@ export const Timeline: React.FC = () => {
     );
   }, [viewDomain]);
 
-  const initialScale = useMemo(() => {
-    if (!viewportW) {
-      return 1;
-    }
-    return Math.min(1, viewportW / totalWidth);
-  }, [viewportW, totalWidth]);
+  const initialScale = useMemo(() => Math.min(1, (viewportW || 1) / (baseContentWidth + 600)), [viewportW]);
 
   // helper to clamp tooltip
   const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
@@ -433,26 +402,26 @@ export const Timeline: React.FC = () => {
     return { t: new Date(last.t), v: last.value };
   };
 
-  const toDate = (x: number) =>
-    xScale.invert
-      ? (xScale.invert(x) as Date)
-      : new Date(
-          viewDomain[0].getTime() +
-            (viewDomain[1].getTime() - viewDomain[0].getTime()) *
-              ((x - (xScale as any).range()[0]) / ((xScale as any).range()[1] - (xScale as any).range()[0]))
-        );
+  // const toDate = (x: number) =>
+  //   xScale.invert
+  //     ? (xScale.invert(x) as Date)
+  //     : new Date(
+  //         viewDomain[0].getTime() +
+  //           (viewDomain[1].getTime() - viewDomain[0].getTime()) *
+  //             ((x - (xScale as any).range()[0]) / ((xScale as any).range()[1] - (xScale as any).range()[0]))
+  //       );
 
   const twRef = useRef<ReactZoomPanPinchRef | null>(null);
 
-  const getZoomState = () => {
-    // support both shapes: {state} or {transformState}
-    const s: any = twRef.current?.state ?? (twRef.current as any)?.transformState;
-    return {
-      scale: Number(s?.scale) || 1,
-      positionX: Number(s?.positionX) || 0,
-      positionY: Number(s?.positionY) || 0,
-    };
-  };
+  // const getZoomState = () => {
+  //   // support both shapes: {state} or {transformState}
+  //   const s: any = twRef.current?.state ?? (twRef.current as any)?.transformState;
+  //   return {
+  //     scale: Number(s?.scale) || 1,
+  //     positionX: Number(s?.positionX) || 0,
+  //     positionY: Number(s?.positionY) || 0,
+  //   };
+  // };
 
   return (
     <div className="space-y-4">
@@ -488,7 +457,8 @@ export const Timeline: React.FC = () => {
                 // default goal = -20 lbs in ~3 months
                 // const end = new Date(lp.t);
                 // end.setMonth(end.getMonth() + 3);
-                setProjection({ metricId: 'weight', dx: 30, dy: -50 });
+                setProjection({ metricId: 'weight', dx: 30, dy: 50 });
+                setRunwayPx((r) => Math.max(r, 600, 300 + 200));
               }}
             >
               {projection ? 'Projection: On' : 'Add Weight Projection'}
@@ -587,10 +557,9 @@ export const Timeline: React.FC = () => {
         />
         <TransformWrapper
           ref={twRef}
-          key={`${viewportW}-${totalWidth}`}
+          key={`${viewportW}`}
           minScale={Math.min(1, (viewportW || 1) / totalWidth)}
           maxScale={6}
-          // initialScale={Math.min(1, (viewportW || 1) / totalWidth)}
           initialScale={initialScale}
           centerOnInit
           wheel={{ step: 0.08 }}
@@ -623,7 +592,7 @@ export const Timeline: React.FC = () => {
               </div>
 
               <TransformComponent wrapperClass="!w-full !h-full" contentClass="!w-fit !h-fit">
-                <svg width={totalWidth} height={chartH}>
+                <svg width={totalWidth} height={chartH} style={{ touchAction: 'none' }}>
                   {/* alternating stripes */}
                   {Array.from({ length: rows }).map((_, i) => (
                     <rect
@@ -807,7 +776,6 @@ export const Timeline: React.FC = () => {
                     (() => {
                       const id = projection.metricId;
 
-                      // y scale picker (unchanged)
                       const yFor = (val: number) => {
                         if (autoScaleMode === 'SINGLE' && ySingle) return ySingle(val);
                         if (autoScaleMode === 'GROUP' && yGroup) return yGroup(val);
@@ -816,51 +784,26 @@ export const Timeline: React.FC = () => {
                         return yNormalized(norm);
                       };
 
-                      // Anchor at the *last* real data point for the chosen metric
-                      const base = (() => {
-                        const s = metricSeries.find((m) => m.id === id)!;
-                        const last = s.points[s.points.length - 1];
-                        return { t: new Date(last.t), v: last.value };
-                      })();
+                      const anchor = lastPointOf(id);
+                      if (!anchor) return null;
+                      const x1 = xScale(anchor.t);
+                      const y1 = yFor(anchor.v);
 
-                      const x1 = xScale(base.t);
-                      const y1 = yFor(base.v);
+                      // Calculate x2Draw and y2Draw based on projection deltas
+                      const x2Draw = x1 + projection.dx;
+                      const y2Draw = y1 - projection.dy;
 
-                      // End = start + numeric vector
-                      const x2 = x1 + projection.dx;
-                      const y2 = y1 + projection.dy;
-
-                      // Safety: keep the end point inside the drawing area so it's draggable
                       const minX = paddingLeft + 6;
                       const maxX = totalWidth - rightPad - 6;
                       const minY = 6;
                       const maxY = chartH - 6;
+                      const metricsTop = topPad + rows * rowHeight + 10;
+                      const metricsBottom = topPad + rows * rowHeight + metricsHeight - 10;
 
-                      const x2Draw = Math.max(minX, Math.min(maxX, x2));
-                      const y2Draw = Math.max(minY, Math.min(maxY, y2));
-
-                      // Keep vector rightward so it never flips backward
                       const x2Right = Math.max(x2Draw, x1 + 10);
-                      const y2Right = y2Draw;
+                      const y2Right = Math.max(metricsTop, Math.min(metricsBottom, y2Draw));
 
-                      // Label numbers: compute Δvalue from dy (optional; remove if you don't care)
-                      let valueDeltaText = '';
-                      try {
-                        const vEnd =
-                          autoScaleMode === 'SINGLE' && ySingle
-                            ? ySingle.invert(y2Right)
-                            : autoScaleMode === 'GROUP' && yGroup
-                              ? yGroup.invert(y2Right)
-                              : (() => {
-                                  const { min, max } = visibleExtents[id];
-                                  const pct =
-                                    ((yNormalized.domain()[0] - y2Right) /
-                                      (yNormalized.domain()[0] - yNormalized.domain()[1])) *
-                                    100;
-                                  return min + (pct / 100) * (max - min);
-                                })();
-                        valueDeltaText = `Δ≈ ${(vEnd - base.v).toFixed(1)}`;
-                      } catch {}
+                      console.log('Rendering Projection with:', { x1, y1, x2Draw, y2Draw, projection }); // ADDED
 
                       return (
                         <g style={{ pointerEvents: 'all' }}>
@@ -879,8 +822,8 @@ export const Timeline: React.FC = () => {
                           <line
                             x1={x1}
                             y1={y1}
-                            x2={x2Right}
-                            y2={y2Right}
+                            x2={x2Draw}
+                            y2={y2Draw}
                             stroke={seriesColor[id]}
                             strokeWidth={5}
                             strokeDasharray="8 8"
@@ -890,51 +833,94 @@ export const Timeline: React.FC = () => {
 
                           {/* Drag layer for the segment + knob */}
                           <Drag
-                            x={x2Right}
-                            y={y2Right}
+                            x={projection.dx + x1}
+                            y={y1 - projection.dy}
                             width={totalWidth}
                             height={chartH}
+                            onDragStart={() => setPanDisabled(true)}
+                            onDragEnd={() => setPanDisabled(false)}
                             onDragMove={({ x, y }) => {
                               if (x == null || y == null) return;
 
-                              const { scale, positionX, positionY } = getZoomState();
-                              // Map pointer to SVG content coordinates
-                              const visibleLeft = Math.max(0, -positionX / scale);
-                              const visibleTop = Math.max(0, -positionY / scale);
-                              const cx = visibleLeft + x / scale;
-                              const cy = visibleTop + y / scale;
+                              const s: any = twRef.current?.state ?? (twRef.current as any)?.transformState;
+                              const scale = Number(s?.scale) || 1;
+                              const posX = Number(s?.positionX) || 0;
+                              const posY = Number(s?.positionY) || 0;
 
-                              // Compute vector from start; force rightward
-                              const dx = Math.max(10, cx - x1);
-                              const dy = cy - y1;
+                              const localX = (x - posX) / scale;
+                              const localY = (y - posY) / scale;
 
-                              setProjection((prev) => (prev ? { ...prev, dx, dy } : prev));
+                              // const visibleLeft = Math.max(0, -posX / scale);
+                              // const visibleTop = Math.max(0, -posY / scale);
+                              // const cx = visibleLeft + x / scale;
+                              // const cy = visibleTop + y / scale;
+
+                              // clamp in content coords
+                              const cxc = Math.max(minX, Math.min(maxX, localX));
+                              const cyc = Math.max(metricsTop, Math.min(metricsBottom, localY));
+                              const nextDx = cxc - x1; // right = +
+                              const nextDy = y1 - cyc; // up = +  (invert SVG Y)
+
+                              console.log('Drag Event:', { x, y }); // ADDED
+                              console.log('Transformed Coordinates:', { localX, localY, cxc, cyc }); // ADDED
+                              console.log('Next Deltas:', { nextDx, nextDy }); // ADDED
+
+                              pendingRef.current = { dx: nextDx, dy: nextDy }; // Storing values in pendingRef
+
+                              if (rafRef.current == null) {
+                                rafRef.current = requestAnimationFrame(() => {
+                                  const p = pendingRef.current;
+                                  if (p) {
+                                    setProjection((prev) => (prev ? { ...prev, ...p } : prev));
+                                    pendingRef.current = null; // Clear pendingRef after updating
+                                  }
+                                  rafRef.current = null;
+                                });
+                              }
+
+                              if (cxc > baseRangeRight + runwayPx - 150) {
+                                setRunwayPx((r) => r + 400); // grow in chunks
+                              }
                             }}
                           >
-                            {({ dragStart, dragEnd, dragMove }) => (
+                            {({ dragStart, dragEnd, dragMove, isDragging }) => (
                               <g>
+                                {isDragging && (
+                                  <rect
+                                    x={0}
+                                    y={0}
+                                    width={totalWidth}
+                                    height={chartH}
+                                    fill="transparent"
+                                    pointerEvents="all"
+                                    onMouseMove={dragMove}
+                                    onMouseUp={dragEnd}
+                                    onTouchMove={dragMove}
+                                    onTouchEnd={dragEnd}
+                                  />
+                                )}
                                 {/* fat (nearly invisible) hit line so you can grab anywhere */}
                                 <line
                                   x1={x1}
                                   y1={y1}
-                                  x2={x2Right}
-                                  y2={y2Right}
+                                  x2={projection.dx + x1}
+                                  y2={y1 - projection.dy}
                                   stroke={seriesColor[id]}
                                   strokeWidth={16}
                                   strokeOpacity={0.001}
                                   pointerEvents="stroke"
                                   onMouseDown={stop(dragStart)}
                                   onMouseMove={stop(dragMove)}
-                                  onMouseUp={dragEnd}
+                                  onMouseUp={stop(dragEnd)}
                                   onTouchStart={stop(dragStart)}
                                   onTouchMove={stop(dragMove)}
-                                  onTouchEnd={dragEnd}
+                                  onTouchEnd={stop(dragEnd)}
                                 />
 
                                 {/* handle: large hit circle + visible knob */}
                                 <circle
-                                  cx={x2Right}
-                                  cy={y2Right}
+                                  cx={projection.dx + x1}
+                                  cy={y1 - projection.dy}
                                   r={22}
                                   fill="#fff"
                                   fillOpacity={0.001}
@@ -942,14 +928,14 @@ export const Timeline: React.FC = () => {
                                   pointerEvents="all"
                                   onMouseDown={stop(dragStart)}
                                   onMouseMove={stop(dragMove)}
-                                  onMouseUp={dragEnd}
+                                  onMouseUp={stop(dragEnd)}
                                   onTouchStart={stop(dragStart)}
                                   onTouchMove={stop(dragMove)}
-                                  onTouchEnd={dragEnd}
+                                  onTouchEnd={stop(dragEnd)}
                                 />
                                 <circle
-                                  cx={x2Right}
-                                  cy={y2Right}
+                                  cx={projection.dx + x1}
+                                  cy={y1 - projection.dy}
                                   r={8}
                                   fill={seriesColor[id]}
                                   stroke="#0b0f1c"
@@ -958,7 +944,7 @@ export const Timeline: React.FC = () => {
                                 />
 
                                 {/* simple label showing deltas */}
-                                <g transform={`translate(${x2Right + 14}, ${y2Right - 10})`}>
+                                {/* <g transform={`translate(${x2Draw + 14}, ${y2Draw - 10})`} pointerEvents="none">
                                   <rect
                                     x={0}
                                     y={-22}
@@ -970,12 +956,12 @@ export const Timeline: React.FC = () => {
                                     stroke="#1f2a44"
                                   />
                                   <text x={10} y={-6} fill="#e2e8f0" fontSize={12} fontWeight={600}>
-                                    dx: {(x2Right - x1).toFixed(0)} px
+                                    dx: {(x2Right - x1).toFixed(0)} px, dy: {(y1 - y2Right).toFixed(0)} px
                                   </text>
-                                  <text x={10} y={10} fill="#94a3b8" fontSize={11}>
+                                  {/* <text x={10} y={10} fill="#94a3b8" fontSize={11}>
                                     {valueDeltaText}
-                                  </text>
-                                </g>
+                                  </text> */}
+                                {/* </g> */}
                               </g>
                             )}
                           </Drag>
