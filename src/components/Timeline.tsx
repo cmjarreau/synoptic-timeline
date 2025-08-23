@@ -26,8 +26,16 @@ import {
   Brain,
   ClipboardList,
 } from 'lucide-react';
+import { Drag } from '@visx/drag';
+import { ReactZoomPanPinchRef } from 'react-zoom-pan-pinch';
 
 // helper methods -
+type Projection = {
+  metricId: MetricSeries['id'];
+  dx: number;
+  dy: number;
+};
+
 const eventIcon: Record<TimelineEventType, LucideIcon> = {
   diagnosis: ClipboardList,
   medication: Pill,
@@ -131,7 +139,7 @@ const pillClasses = (active: boolean) =>
   );
 
 const allTrue = <T extends string>(rec: Record<T, boolean>) => Object.values(rec).every(Boolean);
-const anyTrue = <T extends string>(rec: Record<T, boolean>) => Object.values(rec).some(Boolean);
+// const anyTrue = <T extends string>(rec: Record<T, boolean>) => Object.values(rec).some(Boolean);
 
 // Build a new record with every key set to `val`
 function setAllRecord<T extends string>(keys: T[], val: boolean): Record<T, boolean> {
@@ -160,6 +168,22 @@ const pillAllBlue = (active: boolean) =>
        : 'bg-[#0b1426] border-[#1c2a46] text-slate-300 hover:text-slate-100'
    }`;
 
+const stop =
+  <E extends React.SyntheticEvent<any>>(fn?: (e: E) => void) =>
+  (e: E) => {
+    e.preventDefault();
+    e.stopPropagation();
+    fn?.(e);
+  };
+
+function defaultPositiveDelta(seriesId: MetricSeries['id']) {
+  const s = metricSeries.find((m) => m.id === seriesId);
+  if (!s) return 10;
+  const vals = s.points.map((p) => p.value);
+  const span = Math.max(10, Math.max(...vals) - Math.min(...vals));
+  return Math.round(span * 0.25); // ~25% of span
+}
+
 export const Timeline: React.FC = () => {
   // filter state
   const [enabledTypes, setEnabledTypes] = useState<Record<TimelineEventType, boolean>>({
@@ -184,6 +208,7 @@ export const Timeline: React.FC = () => {
   });
 
   const [smooth, setSmooth] = useState<SmoothMode>('monotone');
+  const [panDisabled, setPanDisabled] = useState(false);
 
   const curveFactory =
     smooth === 'monotone'
@@ -224,16 +249,24 @@ export const Timeline: React.FC = () => {
     return [start, end];
   }, [range, minDate, maxDate]);
 
-  // layout
+  const [projection, setProjection] = useState<Projection | null>(null);
+
   // const metricsHeight = 140;
   const rows = Math.max(...Object.values(rowsByType)) + 1;
   const rowHeight = 36;
   const axisHeight = 40;
   const paddingLeft = 70;
-  const paddingRight = 40;
+  const basePaddingRight = 40;
+  // const projectionPad = projection ? 300 : 0;
+  const rightPad = basePaddingRight;
+
+  const baseContentWidth = 2200;
+  const projectionRunwayPx = projection ? Math.max(600, Math.ceil(projection.dx) + 200) : 0;
+  const totalWidth = baseContentWidth + projectionRunwayPx;
+
   const topPad = 70;
   // const contentHeight = rows * rowHeight + metricsHeight + axisHeight + topPad;
-  const contentWidth = 2200;
+  // const contentWidth = 2200;
   // const contentWidth = months * baseWidthPerMonth + paddingLeft + paddingRight;
 
   const [hover, setHover] = useState<{ x: number; y: number; content: React.ReactNode } | null>(null);
@@ -245,11 +278,22 @@ export const Timeline: React.FC = () => {
     Math.round(chartH * 0.45)
   );
 
+  // Extend the visible domain 6 months into the future when projection is enabled
+  // const effectiveDomain: [Date, Date] = useMemo(() => {
+  //   const [d0, d1] = viewDomain;
+  //   if (!projection) return [d0, d1];
+  //   const extended = new Date(d1);
+  //   extended.setMonth(extended.getMonth() + 6); // +6 months runway
+  //   return [d0, extended];
+  // }, [viewDomain, projection]);
+  const effectiveDomain: [Date, Date] = useMemo(() => viewDomain, [viewDomain, projection]);
+
   const chartInset = 30;
+  const baseRangeRight = baseContentWidth - rightPad;
   // x-scale
   const xScale = useMemo(
-    () => scaleTime<number>({ domain: viewDomain, range: [paddingLeft + chartInset, contentWidth - paddingRight] }),
-    [viewDomain]
+    () => scaleTime<number>({ domain: effectiveDomain, range: [paddingLeft + chartInset, baseRangeRight] }),
+    [effectiveDomain, baseRangeRight, paddingLeft]
   );
 
   // y-scale
@@ -374,12 +418,41 @@ export const Timeline: React.FC = () => {
     if (!viewportW) {
       return 1;
     }
-    return Math.min(1, viewportW / contentWidth);
-  }, [viewportW, contentWidth]);
+    return Math.min(1, viewportW / totalWidth);
+  }, [viewportW, totalWidth]);
 
   // helper to clamp tooltip
   const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
   const tooltipOffset = 12;
+
+  // convenience
+  const lastPointOf = (id: MetricSeries['id']) => {
+    const s = metricSeries.find((m) => m.id === id);
+    if (!s) return null;
+    const last = s.points[s.points.length - 1];
+    return { t: new Date(last.t), v: last.value };
+  };
+
+  const toDate = (x: number) =>
+    xScale.invert
+      ? (xScale.invert(x) as Date)
+      : new Date(
+          viewDomain[0].getTime() +
+            (viewDomain[1].getTime() - viewDomain[0].getTime()) *
+              ((x - (xScale as any).range()[0]) / ((xScale as any).range()[1] - (xScale as any).range()[0]))
+        );
+
+  const twRef = useRef<ReactZoomPanPinchRef | null>(null);
+
+  const getZoomState = () => {
+    // support both shapes: {state} or {transformState}
+    const s: any = twRef.current?.state ?? (twRef.current as any)?.transformState;
+    return {
+      scale: Number(s?.scale) || 1,
+      positionX: Number(s?.positionX) || 0,
+      positionY: Number(s?.positionY) || 0,
+    };
+  };
 
   return (
     <div className="space-y-4">
@@ -388,9 +461,6 @@ export const Timeline: React.FC = () => {
         <div className="flex items-end justify-between gap-4">
           <div>
             <h1 className="text-3xl md:text-4xl font-bold tracking-wide text-slate-100">Patient Timeline</h1>
-            <p className="text-xs text-slate-300/80 mt-1">
-              Drag to pan • Scroll/Pinch to zoom • Toggle tracks & event types
-            </p>
           </div>
           {/* Range chips */}
           <div className="flex items-center gap-2">
@@ -405,6 +475,24 @@ export const Timeline: React.FC = () => {
                 {m === 'straight' ? 'Sharp' : m === 'monotone' ? 'Smooth' : m === 'catmull' ? 'Catmull' : 'Basis'}
               </button>
             ))}
+
+            <button
+              className={chipClasses(!!projection)}
+              onClick={() => {
+                if (projection) {
+                  setProjection(null);
+                  return;
+                }
+                const lp = lastPointOf('weight');
+                if (!lp) return;
+                // default goal = -20 lbs in ~3 months
+                // const end = new Date(lp.t);
+                // end.setMonth(end.getMonth() + 3);
+                setProjection({ metricId: 'weight', dx: 30, dy: -50 });
+              }}
+            >
+              {projection ? 'Projection: On' : 'Add Weight Projection'}
+            </button>
           </div>
         </div>
 
@@ -498,14 +586,17 @@ export const Timeline: React.FC = () => {
           style={{ boxShadow: 'inset 0 0 40px rgba(33,212,253,0.08), inset 0 0 60px rgba(183,33,255,0.06)' }}
         />
         <TransformWrapper
-          key={viewportW}
-          minScale={Math.min(1, (viewportW || 1) / contentWidth)}
+          ref={twRef}
+          key={`${viewportW}-${totalWidth}`}
+          minScale={Math.min(1, (viewportW || 1) / totalWidth)}
           maxScale={6}
+          // initialScale={Math.min(1, (viewportW || 1) / totalWidth)}
           initialScale={initialScale}
           centerOnInit
           wheel={{ step: 0.08 }}
           doubleClick={{ disabled: true }}
-          panning={{ velocityDisabled: true }}
+          // panning={{ disabled: !!projection, velocityDisabled: true }}
+          panning={{ disabled: panDisabled, velocityDisabled: true }}
         >
           {({ zoomIn, zoomOut, resetTransform }) => (
             <>
@@ -532,14 +623,14 @@ export const Timeline: React.FC = () => {
               </div>
 
               <TransformComponent wrapperClass="!w-full !h-full" contentClass="!w-fit !h-fit">
-                <svg width={contentWidth} height={chartH}>
+                <svg width={totalWidth} height={chartH}>
                   {/* alternating stripes */}
                   {Array.from({ length: rows }).map((_, i) => (
                     <rect
                       key={i}
                       x={paddingLeft}
                       y={topPad + i * rowHeight}
-                      width={contentWidth}
+                      width={totalWidth - paddingLeft - rightPad} // CHANGED
                       height={rowHeight}
                       fill={i % 2 === 0 ? bgStripeA : bgStripeB}
                     />
@@ -547,7 +638,7 @@ export const Timeline: React.FC = () => {
 
                   {/* faint vertical grid */}
                   {Array.from({ length: 24 }).map((_, i) => {
-                    const x = paddingLeft + i * ((contentWidth - paddingRight - paddingLeft) / 24);
+                    const x = paddingLeft + i * ((totalWidth - rightPad - paddingLeft) / 24); // CHANGED
                     return <line key={i} x1={x} x2={x} y1={0} y2={chartH} stroke={gridStroke} strokeWidth={1} />;
                   })}
 
@@ -555,7 +646,7 @@ export const Timeline: React.FC = () => {
                   <rect
                     x={paddingLeft}
                     y={topPad + rows * rowHeight}
-                    width={contentWidth - paddingLeft - paddingRight}
+                    width={totalWidth - paddingLeft - rightPad}
                     height={metricsHeight}
                     fill="#0a1221"
                     opacity={0.6}
@@ -711,6 +802,187 @@ export const Timeline: React.FC = () => {
                     );
                   })}
 
+                  {projection &&
+                    enabledSeries[projection.metricId] &&
+                    (() => {
+                      const id = projection.metricId;
+
+                      // y scale picker (unchanged)
+                      const yFor = (val: number) => {
+                        if (autoScaleMode === 'SINGLE' && ySingle) return ySingle(val);
+                        if (autoScaleMode === 'GROUP' && yGroup) return yGroup(val);
+                        const { min, max } = visibleExtents[id]; // normalized fallback
+                        const norm = ((val - min) / (max - min)) * 100;
+                        return yNormalized(norm);
+                      };
+
+                      // Anchor at the *last* real data point for the chosen metric
+                      const base = (() => {
+                        const s = metricSeries.find((m) => m.id === id)!;
+                        const last = s.points[s.points.length - 1];
+                        return { t: new Date(last.t), v: last.value };
+                      })();
+
+                      const x1 = xScale(base.t);
+                      const y1 = yFor(base.v);
+
+                      // End = start + numeric vector
+                      const x2 = x1 + projection.dx;
+                      const y2 = y1 + projection.dy;
+
+                      // Safety: keep the end point inside the drawing area so it's draggable
+                      const minX = paddingLeft + 6;
+                      const maxX = totalWidth - rightPad - 6;
+                      const minY = 6;
+                      const maxY = chartH - 6;
+
+                      const x2Draw = Math.max(minX, Math.min(maxX, x2));
+                      const y2Draw = Math.max(minY, Math.min(maxY, y2));
+
+                      // Keep vector rightward so it never flips backward
+                      const x2Right = Math.max(x2Draw, x1 + 10);
+                      const y2Right = y2Draw;
+
+                      // Label numbers: compute Δvalue from dy (optional; remove if you don't care)
+                      let valueDeltaText = '';
+                      try {
+                        const vEnd =
+                          autoScaleMode === 'SINGLE' && ySingle
+                            ? ySingle.invert(y2Right)
+                            : autoScaleMode === 'GROUP' && yGroup
+                              ? yGroup.invert(y2Right)
+                              : (() => {
+                                  const { min, max } = visibleExtents[id];
+                                  const pct =
+                                    ((yNormalized.domain()[0] - y2Right) /
+                                      (yNormalized.domain()[0] - yNormalized.domain()[1])) *
+                                    100;
+                                  return min + (pct / 100) * (max - min);
+                                })();
+                        valueDeltaText = `Δ≈ ${(vEnd - base.v).toFixed(1)}`;
+                      } catch {}
+
+                      return (
+                        <g style={{ pointerEvents: 'all' }}>
+                          {/* guide shading under the metrics area*/}
+                          <rect
+                            x={baseRangeRight}
+                            y={topPad + rows * rowHeight}
+                            width={Math.max(0, totalWidth - rightPad - baseRangeRight)}
+                            height={metricsHeight}
+                            fill="#1b2642"
+                            opacity={0.12}
+                            pointerEvents="none"
+                          />
+
+                          {/* dashed projection */}
+                          <line
+                            x1={x1}
+                            y1={y1}
+                            x2={x2Right}
+                            y2={y2Right}
+                            stroke={seriesColor[id]}
+                            strokeWidth={5}
+                            strokeDasharray="8 8"
+                            opacity={0.95}
+                            pointerEvents="none"
+                          />
+
+                          {/* Drag layer for the segment + knob */}
+                          <Drag
+                            x={x2Right}
+                            y={y2Right}
+                            width={totalWidth}
+                            height={chartH}
+                            onDragMove={({ x, y }) => {
+                              if (x == null || y == null) return;
+
+                              const { scale, positionX, positionY } = getZoomState();
+                              // Map pointer to SVG content coordinates
+                              const visibleLeft = Math.max(0, -positionX / scale);
+                              const visibleTop = Math.max(0, -positionY / scale);
+                              const cx = visibleLeft + x / scale;
+                              const cy = visibleTop + y / scale;
+
+                              // Compute vector from start; force rightward
+                              const dx = Math.max(10, cx - x1);
+                              const dy = cy - y1;
+
+                              setProjection((prev) => (prev ? { ...prev, dx, dy } : prev));
+                            }}
+                          >
+                            {({ dragStart, dragEnd, dragMove }) => (
+                              <g>
+                                {/* fat (nearly invisible) hit line so you can grab anywhere */}
+                                <line
+                                  x1={x1}
+                                  y1={y1}
+                                  x2={x2Right}
+                                  y2={y2Right}
+                                  stroke={seriesColor[id]}
+                                  strokeWidth={16}
+                                  strokeOpacity={0.001}
+                                  pointerEvents="stroke"
+                                  onMouseDown={stop(dragStart)}
+                                  onMouseMove={stop(dragMove)}
+                                  onMouseUp={dragEnd}
+                                  onTouchStart={stop(dragStart)}
+                                  onTouchMove={stop(dragMove)}
+                                  onTouchEnd={dragEnd}
+                                />
+
+                                {/* handle: large hit circle + visible knob */}
+                                <circle
+                                  cx={x2Right}
+                                  cy={y2Right}
+                                  r={22}
+                                  fill="#fff"
+                                  fillOpacity={0.001}
+                                  className="cursor-grab"
+                                  pointerEvents="all"
+                                  onMouseDown={stop(dragStart)}
+                                  onMouseMove={stop(dragMove)}
+                                  onMouseUp={dragEnd}
+                                  onTouchStart={stop(dragStart)}
+                                  onTouchMove={stop(dragMove)}
+                                  onTouchEnd={dragEnd}
+                                />
+                                <circle
+                                  cx={x2Right}
+                                  cy={y2Right}
+                                  r={8}
+                                  fill={seriesColor[id]}
+                                  stroke="#0b0f1c"
+                                  strokeWidth={2}
+                                  pointerEvents="none"
+                                />
+
+                                {/* simple label showing deltas */}
+                                <g transform={`translate(${x2Right + 14}, ${y2Right - 10})`}>
+                                  <rect
+                                    x={0}
+                                    y={-22}
+                                    rx={6}
+                                    ry={6}
+                                    width={150}
+                                    height={48}
+                                    fill="#0f172a"
+                                    stroke="#1f2a44"
+                                  />
+                                  <text x={10} y={-6} fill="#e2e8f0" fontSize={12} fontWeight={600}>
+                                    dx: {(x2Right - x1).toFixed(0)} px
+                                  </text>
+                                  <text x={10} y={10} fill="#94a3b8" fontSize={11}>
+                                    {valueDeltaText}
+                                  </text>
+                                </g>
+                              </g>
+                            )}
+                          </Drag>
+                        </g>
+                      );
+                    })()}
+
                   {/* Left Axis (SINGLE or GROUP) */}
                   {(autoScaleMode === 'SINGLE' || autoScaleMode === 'GROUP') && (ySingle || yGroup) && (
                     <g>
@@ -786,12 +1058,11 @@ export const Timeline: React.FC = () => {
                   </g>
                 </svg>
 
-                {/* Tooltip + clamping*/}
                 {hover && (
                   <div
                     className="absolute z-30 pointer-events-none bg-[#0f172a] text-slate-100 border border-slate-700 rounded-md shadow px-3 py-2 text-xs"
                     style={{
-                      left: clamp(hover.x + tooltipOffset, 8, contentWidth - 300),
+                      left: clamp(hover.x + tooltipOffset, 8, totalWidth - 300),
                       top: clamp(hover.y + tooltipOffset, 8, chartH - 100),
                       maxWidth: 280,
                     }}
