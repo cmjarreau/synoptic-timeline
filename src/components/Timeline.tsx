@@ -470,6 +470,24 @@ export const Timeline: React.FC = () => {
     chartInset,
   ]);
 
+  function dateFromDx(dxPx: number, anchorDate: Date) {
+    const [r0, r1] = (xScale as any).range();
+    const spanPx = (r1 as number) - (r0 as number);
+    const spanMs = viewDomain[1].getTime() - viewDomain[0].getTime();
+    const msPerPx = spanMs / spanPx;
+    return new Date(anchorDate.getTime() + dxPx * msPerPx);
+  }
+
+  // Invert the y-value back to the metric value using the active scale mode
+  function valueFromY(y: number, id: MetricSeries['id']) {
+    if (autoScaleMode === 'SINGLE' && ySingle) return ySingle.invert(y);
+    if (autoScaleMode === 'GROUP' && yGroup) return yGroup.invert(y);
+    // NORMALIZED: yNormalized is 0–100, then map back using visibleExtents
+    const pct = yNormalized.invert(y); // 0..100
+    const { min, max } = visibleExtents[id];
+    return min + (pct / 100) * (max - min);
+  }
+
   return (
     <div className="space-y-4">
       {/* Header */}
@@ -637,25 +655,6 @@ export const Timeline: React.FC = () => {
                   Reset
                 </button>
               </div>
-
-              {projectionReadout && (
-                <div className="absolute left-3 bottom-3 z-30 bg-[#0f172a]/85 border border-slate-700 rounded-md px-3 py-2 text-xs text-slate-100 shadow">
-                  <div className="font-semibold mb-0.5">Projected weight</div>
-                  <div>
-                    {format(projectionReadout.t, 'PP')} (
-                    {projectionReadout.daysAhead >= 0 ? `+${projectionReadout.daysAhead}` : projectionReadout.daysAhead}{' '}
-                    d)
-                  </div>
-                  <div className="mt-0.5">
-                    <span className="font-semibold">{projectionReadout.v.toFixed(1)} lbs</span>{' '}
-                    <span className={projectionReadout.delta >= 0 ? 'text-rose-400' : 'text-emerald-400'}>
-                      ({projectionReadout.delta >= 0 ? '+' : ''}
-                      {projectionReadout.delta.toFixed(1)})
-                    </span>
-                    <span className="text-slate-400"> vs latest</span>
-                  </div>
-                </div>
-              )}
 
               <TransformComponent wrapperClass="!w-full !h-full" contentClass="!w-fit !h-fit">
                 <svg ref={svgRef} width={totalWidth} height={chartH} style={{ touchAction: 'none' }}>
@@ -939,87 +938,103 @@ export const Timeline: React.FC = () => {
                               }
                             }}
                           >
-                            {({ dragStart, dragEnd, dragMove, isDragging }) => (
-                              <g>
-                                {isDragging && (
-                                  <rect
-                                    x={0}
-                                    y={0}
-                                    width={totalWidth}
-                                    height={chartH}
-                                    fill="transparent"
-                                    pointerEvents="all"
+                            {({ dragStart, dragEnd, dragMove, isDragging }) => {
+                              const handleX = x1 + projection.dx;
+                              const handleY = y1 - projection.dy;
+
+                              // live projection readout (date + value + delta)
+                              const projDate = dateFromDx(projection.dx, anchor.t);
+                              const projVal = valueFromY(handleY, id);
+                              const delta = projVal - anchor.v;
+
+                              const series = metricSeries.find((s) => s.id === id)!;
+                              const unit = series.unit || (unitGroup[id] === 'lbs' ? 'lbs' : '');
+                              return (
+                                <g>
+                                  {isDragging && (
+                                    <rect
+                                      x={0}
+                                      y={0}
+                                      width={totalWidth}
+                                      height={chartH}
+                                      fill="transparent"
+                                      pointerEvents="all"
+                                      onMouseMove={dragMove}
+                                      onMouseUp={dragEnd}
+                                      onTouchMove={dragMove}
+                                      onTouchEnd={dragEnd}
+                                    />
+                                  )}
+                                  {/* fat (nearly invisible) hit line so you can grab anywhere */}
+                                  <line
+                                    x1={x1}
+                                    y1={y1}
+                                    x2={x1 + projection.dx}
+                                    y2={y1 - projection.dy}
+                                    stroke={seriesColor[id]}
+                                    strokeWidth={16}
+                                    strokeOpacity={0.001}
+                                    pointerEvents="stroke"
+                                    onMouseDown={dragStart}
                                     onMouseMove={dragMove}
                                     onMouseUp={dragEnd}
+                                    onTouchStart={dragStart}
                                     onTouchMove={dragMove}
                                     onTouchEnd={dragEnd}
                                   />
-                                )}
-                                {/* fat (nearly invisible) hit line so you can grab anywhere */}
-                                <line
-                                  x1={x1}
-                                  y1={y1}
-                                  x2={x1 + projection.dx}
-                                  y2={y1 - projection.dy}
-                                  stroke={seriesColor[id]}
-                                  strokeWidth={16}
-                                  strokeOpacity={0.001}
-                                  pointerEvents="stroke"
-                                  onMouseDown={dragStart}
-                                  onMouseMove={dragMove}
-                                  onMouseUp={dragEnd}
-                                  onTouchStart={dragStart}
-                                  onTouchMove={dragMove}
-                                  onTouchEnd={dragEnd}
-                                />
 
-                                {/* handle: large hit circle + visible knob */}
-                                <circle
-                                  cx={x1 + projection.dx}
-                                  cy={y1 - projection.dy}
-                                  r={22}
-                                  fill="#fff"
-                                  fillOpacity={0.001}
-                                  className="cursor-grab"
-                                  pointerEvents="all"
-                                  onMouseDown={dragStart}
-                                  onMouseMove={dragMove}
-                                  onMouseUp={dragEnd}
-                                  onTouchStart={dragStart}
-                                  onTouchMove={dragMove}
-                                  onTouchEnd={dragEnd}
-                                />
-                                <circle
-                                  cx={x1 + projection.dx}
-                                  cy={y1 - projection.dy}
-                                  r={8}
-                                  fill={seriesColor[id]}
-                                  stroke="#0b0f1c"
-                                  strokeWidth={2}
-                                  pointerEvents="none"
-                                />
-
-                                {/* simple label showing deltas */}
-                                {/* <g transform={`translate(${x2Draw + 14}, ${y2Draw - 10})`} pointerEvents="none">
-                                  <rect
-                                    x={0}
-                                    y={-22}
-                                    rx={6}
-                                    ry={6}
-                                    width={150}
-                                    height={48}
-                                    fill="#0f172a"
-                                    stroke="#1f2a44"
+                                  {/* handle: large hit circle + visible knob */}
+                                  <circle
+                                    cx={x1 + projection.dx}
+                                    cy={y1 - projection.dy}
+                                    r={22}
+                                    fill="#fff"
+                                    fillOpacity={0.001}
+                                    className="cursor-grab"
+                                    pointerEvents="all"
+                                    onMouseDown={dragStart}
+                                    onMouseMove={dragMove}
+                                    onMouseUp={dragEnd}
+                                    onTouchStart={dragStart}
+                                    onTouchMove={dragMove}
+                                    onTouchEnd={dragEnd}
                                   />
-                                  <text x={10} y={-6} fill="#e2e8f0" fontSize={12} fontWeight={600}>
-                                    dx: {(x2Right - x1).toFixed(0)} px, dy: {(y1 - y2Right).toFixed(0)} px
-                                  </text>
-                                  {/* <text x={10} y={10} fill="#94a3b8" fontSize={11}>
-                                    {valueDeltaText}
-                                  </text> */}
-                                {/* </g> */}
-                              </g>
-                            )}
+                                  <circle
+                                    cx={x1 + projection.dx}
+                                    cy={y1 - projection.dy}
+                                    r={8}
+                                    fill={seriesColor[id]}
+                                    stroke="#0b0f1c"
+                                    strokeWidth={2}
+                                    pointerEvents="none"
+                                  />
+
+                                  {/* simple label showing deltas */}
+                                  <g transform={`translate(${handleX + 14}, ${handleY - 10})`} pointerEvents="none">
+                                    <rect
+                                      x={0}
+                                      y={-28}
+                                      rx={6}
+                                      ry={6}
+                                      width={190}
+                                      height={64}
+                                      fill="#0f172a"
+                                      stroke="#1f2a44"
+                                    />
+                                    <text x={10} y={-10} fill="#e2e8f0" fontSize={12} fontWeight={700}>
+                                      {projVal.toFixed(1)} {unit}
+                                    </text>
+                                    <text x={10} y={6} fill="#94a3b8" fontSize={11}>
+                                      {delta >= 0 ? '+' : ''}
+                                      {delta.toFixed(1)} {unit} from {anchor.v.toFixed(1)}
+                                    </text>
+                                    <text x={10} y={22} fill="#94a3b8" fontSize={11}>
+                                      {format(projDate, 'PP')}
+                                    </text>
+                                  </g>
+                                </g>
+                              );
+                            }}
                           </Drag>
                         </g>
                       );
